@@ -1,49 +1,143 @@
 -- PortalGun (LocalScript only)
--- Put this ONE LocalScript in: StarterPlayer > StarterPlayerScripts
+-- Run it with an executor (loadstring) or put it in StarterPlayer > StarterPlayerScripts.
 -- Everything runs for the local player: the gun is built in your Backpack,
 -- portals are drawn on your screen, and you move your own character
 -- (your character's position replicates to the server automatically).
+--
+-- Admin panel: press RightShift or click the "PG" button on the left of the screen.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local Debris = game:GetService("Debris")
+local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
-
----------------------------------------------------------------- settings
-local TOOL_NAME = "PortalGun"
-
-local COOLDOWN = 1.5            -- seconds between shots
-local MAX_DISTANCE = 5000       -- max teleport distance in studs
-local AIM_RANGE = 1000
-local PORTAL_SIZE = 9           -- portal diameter in studs
-local TRAVEL_DELAY = 0.45       -- time between portal opening and the jump
-local PORTAL_LIFETIME = 2.5
-local SHOT_SOUND_ID = ""        -- optional, e.g. "rbxassetid://123456"
-
-local GREEN = Color3.fromRGB(0, 255, 42)        -- vivid portal green
-local GREEN_DEEP = Color3.fromRGB(0, 110, 25)
-local GREEN_HOT = Color3.fromRGB(200, 255, 90)  -- lime-yellow core
-local DARK = Color3.fromRGB(18, 22, 26)
-local MID = Color3.fromRGB(34, 40, 46)
-
--- plasma tube (position is relative to the gun's Handle; gun points toward -Z)
-local PLASMA_COUNT = 6
-local TUBE_CENTER = CFrame.new(0, 0.46, -0.15)
-local TUBE_LENGTH = 0.9
-local TUBE_DIAMETER = 0.42
-local TUBE_HALF = TUBE_LENGTH / 2 - 0.14
-
-local ALONG_Z = CFrame.Angles(0, math.rad(90), 0) -- turns a cylinder so it lies along the barrel
-local BASE_GRIP = CFrame.new(0, -0.45, 0.5)
-----------------------------------------------------------------
 
 local player = Players.LocalPlayer
 
+-- running the script again replaces the old copy instead of doubling everything
+if _G.PortalGunCleanup then
+	pcall(_G.PortalGunCleanup)
+end
+local connections = {}
+local function track(c)
+	table.insert(connections, c)
+	return c
+end
+
+---------------------------------------------------------------- settings
+local TOOL_NAME = "PortalGun"
+local SAVE_FILE = "PortalGun_settings.json"
+local SHOT_SOUND_ID = ""        -- optional, e.g. "rbxassetid://123456"
+local ADMIN_KEY = Enum.KeyCode.RightShift
+
+local function rgb(r, g, b)
+	return Color3.fromRGB(r, g, b)
+end
+
+-- portal colour themes (picked in the admin panel)
+local THEMES = {
+	{ name = "GREEN",  rim = rgb(0, 255, 42),   mid = rgb(90, 235, 40),   deep = rgb(0, 80, 18),  core = rgb(225, 255, 120) },
+	{ name = "BLUE",   rim = rgb(0, 170, 255),  mid = rgb(70, 210, 255),  deep = rgb(0, 35, 100), core = rgb(215, 245, 255) },
+	{ name = "ORANGE", rim = rgb(255, 130, 0),  mid = rgb(255, 190, 40),  deep = rgb(100, 35, 0), core = rgb(255, 245, 200) },
+	{ name = "PURPLE", rim = rgb(170, 60, 255), mid = rgb(210, 120, 255), deep = rgb(45, 0, 95),  core = rgb(245, 215, 255) },
+	{ name = "RED",    rim = rgb(255, 35, 35),  mid = rgb(255, 110, 80),  deep = rgb(95, 0, 0),   core = rgb(255, 220, 200) },
+}
+
+local DEFAULTS = {
+	cooldown = 1.5,          -- seconds between gun shots
+	maxDistance = 5000,      -- max teleport distance in studs
+	aimRange = 1000,         -- how far the gun can aim
+	portalSize = 9,          -- portal diameter in studs
+	portalLifetime = 2.5,    -- seconds a portal stays open
+	travelDelay = 0.45,      -- time between portal opening and the jump
+	theme = 1,
+	showPortals = true,
+	clickTeleport = true,
+	showDimensions = true,
+	saved = {},              -- saved spots: { name, x, y, z }
+}
+
+local cfg = {}
+local function resetCfg(keepSaved)
+	local saved = cfg.saved
+	for k, v in pairs(DEFAULTS) do
+		cfg[k] = (type(v) == "table") and {} or v
+	end
+	if keepSaved and saved then
+		cfg.saved = saved
+	end
+end
+resetCfg(false)
+
+local canSave = typeof(writefile) == "function" and typeof(readfile) == "function"
+local function saveCfg()
+	if canSave then
+		pcall(function()
+			writefile(SAVE_FILE, HttpService:JSONEncode(cfg))
+		end)
+	end
+end
+local function loadCfg()
+	if not canSave then return end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(SAVE_FILE))
+	end)
+	if ok and type(data) == "table" then
+		for k, v in pairs(data) do
+			if DEFAULTS[k] ~= nil and type(v) == type(DEFAULTS[k]) then
+				cfg[k] = v
+			end
+		end
+	end
+end
+loadCfg()
+
+local function theme()
+	return THEMES[cfg.theme] or THEMES[1]
+end
+
+local GREEN = rgb(0, 255, 42)
+local GREEN_HOT = rgb(200, 255, 90)
+----------------------------------------------------------------
+
 --==============================================================
---  gun model
+--  gun model (built from the scanned model, part by part)
 --==============================================================
+-- The Handle is the vertical grip. In the model's own space +X is "up" and -Z is forward.
+local BASE_GRIP = CFrame.Angles(0, 0, math.rad(-90))
+local ORB_CENTER = CFrame.new(1.134, 0.016, -0.695)   -- the green ball on top
+local ORB_SIZE = 0.48
+local PLASMA_COUNT = 6
+
+local WHITE = rgb(231, 231, 236)
+local BLACK = rgb(17, 17, 17)
+local RED = rgb(117, 0, 0)
+local CYL = Enum.PartType.Cylinder
+local BLOCK = Enum.PartType.Block
+local PLASTIC = Enum.Material.Plastic
+local NEON = Enum.Material.Neon
+
+local function at(x, y, z, rx, ry, rz)
+	return CFrame.new(x, y, z) * CFrame.fromOrientation(math.rad(rx), math.rad(ry), math.rad(rz))
+end
+
+-- name, size, offset from Handle, colour, material, shape
+local GUN_PARTS = {
+	{ "BackCyl1",    Vector3.new(1.04, 0.3, 0.48),  at(0.635, 0, 0.156, 0.005, 173.62, 89.999),      WHITE, PLASTIC, CYL },
+	{ "BackCyl2",    Vector3.new(1.04, 0.3, 0.48),  at(0.647, 0, 0.156, 0.005, 173.62, 89.999),      WHITE, PLASTIC, CYL },
+	{ "BackCyl3",    Vector3.new(1.04, 0.3, 0.48),  at(0.615, -0.004, 0.156, 0.005, 173.62, 89.999), WHITE, PLASTIC, CYL },
+	{ "BackCyl4",    Vector3.new(1.04, 0.3, 0.48),  at(0.623, 0, 0.152, 0.005, 173.62, 89.999),      WHITE, PLASTIC, CYL },
+	{ "Body",        Vector3.new(1.31, 0.27, 1.03), at(0.719, -0.004, -0.434, -90, -100, 0),         WHITE, PLASTIC, BLOCK },
+	{ "Knob",        Vector3.new(0.2, 0.2, 0.2),    at(0.696, 0.039, 0.184, 0, -18.03, 179.998),     BLACK, PLASTIC, CYL },
+	{ "FrontPlate",  Vector3.new(0.2, 0.24, 0.99),  at(0.821, -0.02, -0.988, -90, -100, 0),          BLACK, PLASTIC, BLOCK },
+	{ "Nozzle",      Vector3.new(0.2, 0.47, 0.45),  at(0.822, 0.012, -0.762, 0, -9.822, -179.998),   BLACK, PLASTIC, CYL },
+	{ "EmitterL",    Vector3.new(0.25, 0.31, 0.2),  at(0.821, 0.328, -1.008, -90, -100, 0),          GREEN, NEON, CYL },
+	{ "EmitterM",    Vector3.new(0.25, 0.31, 0.2),  at(0.818, 0.008, -1.02, -90, -100, 0),           GREEN, NEON, CYL },
+	{ "EmitterR",    Vector3.new(0.25, 0.31, 0.2),  at(0.818, -0.363, -1.02, -90, -100, 0),          GREEN, NEON, CYL },
+	{ "Display",     Vector3.new(0.24, 0.27, 0.54), at(0.697, 0.012, -0.172, -90, -100, 0),          RED, PLASTIC, BLOCK },
+}
+
 local function buildTool()
 	local tool = Instance.new("Tool")
 	tool.Name = TOOL_NAME
@@ -51,17 +145,11 @@ local function buildTool()
 	tool.CanBeDropped = false
 	tool.Grip = BASE_GRIP
 
-	-- sci-fi "portal gun" look: white body, glass bulb on top, three green emitters up front
-	local white = Color3.fromRGB(231, 231, 236)
-	local grey = Color3.fromRGB(170, 172, 180)
-	local black = Color3.fromRGB(17, 17, 17)
-	local red = Color3.fromRGB(117, 0, 0)
-
 	local handle = Instance.new("Part")
 	handle.Name = "Handle"
-	handle.Size = Vector3.new(0.55, 0.5, 1.3)
-	handle.Color = white
-	handle.Material = Enum.Material.SmoothPlastic
+	handle.Size = Vector3.new(1.045, 0.453, 0.453)
+	handle.Color = WHITE
+	handle.Material = PLASTIC
 	handle.CanCollide = false
 	handle.Massless = true
 	handle.Parent = tool
@@ -71,10 +159,8 @@ local function buildTool()
 		p.Name = name
 		p.Size = size
 		p.Color = color
-		p.Material = material or Enum.Material.SmoothPlastic
-		if shape then
-			p.Shape = shape
-		end
+		p.Material = material or PLASTIC
+		p.Shape = shape or BLOCK
 		p.CanCollide = false
 		p.CanQuery = false
 		p.CanTouch = false
@@ -84,8 +170,8 @@ local function buildTool()
 		return p
 	end
 
-	local function fixed(name, size, offset, color, material, shape)
-		local p = part(name, size, offset, color, material, shape)
+	local function fixed(...)
+		local p = part(...)
 		local weld = Instance.new("WeldConstraint")
 		weld.Part0 = handle
 		weld.Part1 = p
@@ -93,28 +179,25 @@ local function buildTool()
 		return p
 	end
 
-	local CYL = Enum.PartType.Cylinder
-	local UPRIGHT = CFrame.Angles(0, 0, math.rad(90)) -- turns a cylinder to stand up
-
-	-- rounded back drum + dark rear disc
-	fixed("RearDrum", Vector3.new(0.4, 0.62, 0.62), CFrame.new(0, 0, 0.62) * ALONG_Z, white, nil, CYL)
-	fixed("RearDisc", Vector3.new(0.04, 0.42, 0.42), CFrame.new(0, 0, 0.83) * ALONG_Z, black, nil, CYL)
-
-	-- grip under the back
-	fixed("Grip", Vector3.new(0.32, 0.7, 0.36), CFrame.new(0, -0.55, 0.45) * CFrame.Angles(math.rad(-12), 0, 0), grey)
-	fixed("Trigger", Vector3.new(0.08, 0.2, 0.08), CFrame.new(0, -0.33, 0.12) * CFrame.Angles(math.rad(20), 0, 0), black)
-
-	-- black knob on top
-	fixed("Knob", Vector3.new(0.12, 0.18, 0.18), CFrame.new(0, 0.3, 0.45) * UPRIGHT, black, nil, CYL)
-
-	-- front: black plate with three green emitters stacked top to bottom
-	fixed("FrontPlate", Vector3.new(0.5, 0.66, 0.12), CFrame.new(0, 0, -0.7), black)
-	local emitters = {}
-	for i, y in ipairs({ 0.21, 0, -0.21 }) do
-		fixed("EmitterRing" .. i, Vector3.new(0.08, 0.2, 0.2), CFrame.new(0, y, -0.78) * ALONG_Z, grey, nil, CYL)
-		emitters[i] = fixed("Emitter" .. i, Vector3.new(0.1, 0.15, 0.15), CFrame.new(0, y, -0.84) * ALONG_Z, GREEN, Enum.Material.Neon, CYL)
+	-- moving pieces get a Weld whose C0 we change every frame
+	local function moving(name, size, color, material, shape)
+		local p = part(name, size, ORB_CENTER, color, material, shape)
+		p.CastShadow = false
+		local w = Instance.new("Weld")
+		w.Part0 = handle
+		w.Part1 = p
+		w.C0 = ORB_CENTER
+		w.Parent = p
+		return p, w
 	end
-	local muzzle = emitters[2]
+
+	local parts = {}
+	for _, d in ipairs(GUN_PARTS) do
+		parts[d[1]] = fixed(d[1], d[2], d[3], d[4], d[5], d[6])
+	end
+
+	-- muzzle = middle emitter
+	local muzzle = parts.EmitterM
 	local glow = Instance.new("PointLight")
 	glow.Name = "Glow"
 	glow.Color = GREEN
@@ -122,24 +205,18 @@ local function buildTool()
 	glow.Brightness = 1
 	glow.Parent = muzzle
 
-	-- tiny green twinkle in front of the emitters
-	local tip = fixed("Tip", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, -0.95), GREEN)
-	tip.Transparency = 1
-	local twinkle = Instance.new("ParticleEmitter")
-	twinkle.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	twinkle.Color = ColorSequence.new(GREEN)
-	twinkle.LightEmission = 1
-	twinkle.LockedToPart = true
-	twinkle.Rate = 60
-	twinkle.Lifetime = NumberRange.new(0.2)
-	twinkle.Speed = NumberRange.new(0)
-	twinkle.Size = NumberSequence.new(0.12)
-	twinkle.Parent = tip
-
-	-- red side display (shows READY / cooldown)
-	local panel = fixed("Display", Vector3.new(0.04, 0.26, 0.52), CFrame.new(0.29, 0, 0.05), red)
+	-- display: put the text on the face that points back at the player (+Z)
+	local panel = parts.Display
+	local rel = handle.CFrame:ToObjectSpace(panel.CFrame)
+	local bestFace, bestDot = Enum.NormalId.Back, -2
+	for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+		local dot = rel:VectorToWorldSpace(Vector3.FromNormalId(face)):Dot(Vector3.new(0, 0, 1))
+		if dot > bestDot then
+			bestFace, bestDot = face, dot
+		end
+	end
 	local sg = Instance.new("SurfaceGui")
-	sg.Face = Enum.NormalId.Right
+	sg.Face = bestFace
 	sg.LightInfluence = 0
 	sg.CanvasSize = Vector2.new(200, 100)
 	sg.Parent = panel
@@ -148,61 +225,51 @@ local function buildTool()
 	display.Size = UDim2.fromScale(1, 1)
 	display.Font = Enum.Font.Arcade
 	display.TextScaled = true
-	display.TextColor3 = Color3.fromRGB(255, 120, 120)
+	display.TextColor3 = rgb(255, 120, 120)
 	display.Text = "READY"
 	display.Parent = sg
 
-	-- glass bulb on top: tube + rounded front end, held by grey caps
-	fixed("Cradle", Vector3.new(0.3, 0.1, TUBE_LENGTH), CFrame.new(0, 0.27, -0.15), grey)
-	local tube = fixed("PlasmaTube", Vector3.new(TUBE_LENGTH, TUBE_DIAMETER, TUBE_DIAMETER), TUBE_CENTER * ALONG_Z, GREEN, Enum.Material.SmoothPlastic, CYL)
-	tube.Transparency = 0.45
-	tube.CastShadow = false
-	local bulbEnd = fixed("BulbEnd", Vector3.new(TUBE_DIAMETER, TUBE_DIAMETER, TUBE_DIAMETER),
-		TUBE_CENTER * CFrame.new(0, 0, -TUBE_LENGTH / 2), GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Ball)
-	bulbEnd.Transparency = 0.45
-	bulbEnd.CastShadow = false
-	fixed("TubeCap", Vector3.new(0.1, TUBE_DIAMETER + 0.08, TUBE_DIAMETER + 0.08),
-		TUBE_CENTER * CFrame.new(0, 0, TUBE_LENGTH / 2 + 0.04) * ALONG_Z, grey, nil, CYL)
-	fixed("FeedPipe", Vector3.new(0.4, 0.09, 0.09), CFrame.new(0, 0.32, -0.66) * CFrame.Angles(math.rad(60), 0, 0) * ALONG_Z, GREEN, Enum.Material.Neon, CYL)
+	-- green glass ball on top
+	local orb = fixed("EnergyBall", Vector3.new(ORB_SIZE, ORB_SIZE, ORB_SIZE), ORB_CENTER, GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+	orb.Transparency = 0.5
+	orb.CastShadow = false
 
-	-- soft glow and drifting sparks inside the bulb
-	local mist = fixed("PlasmaMist", Vector3.new(0.22, 0.22, TUBE_LENGTH - 0.2), TUBE_CENTER, GREEN)
-	mist.Transparency = 1
-	local tubeLight = Instance.new("PointLight")
-	tubeLight.Name = "TubeLight"
-	tubeLight.Color = GREEN
-	tubeLight.Range = 5
-	tubeLight.Brightness = 1.5
-	tubeLight.Parent = mist
-	local sparks = Instance.new("ParticleEmitter")
-	sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	sparks.Color = ColorSequence.new(GREEN_HOT, GREEN)
-	sparks.LightEmission = 1
-	sparks.LockedToPart = true
-	sparks.Rate = 30
-	sparks.Lifetime = NumberRange.new(0.3, 0.7)
-	sparks.Speed = NumberRange.new(0.2, 0.7)
-	sparks.SpreadAngle = Vector2.new(180, 180)
-	sparks.RotSpeed = NumberRange.new(-200, 200)
-	sparks.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.16),
+	-- twinkle inside the ball (same idea as the scanned model's particle part)
+	local twinkle = Instance.new("ParticleEmitter")
+	twinkle.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	twinkle.Color = ColorSequence.new(GREEN_HOT, GREEN)
+	twinkle.LightEmission = 1
+	twinkle.LockedToPart = true
+	twinkle.Rate = 40
+	twinkle.Lifetime = NumberRange.new(0.2, 0.5)
+	twinkle.Speed = NumberRange.new(0.1, 0.4)
+	twinkle.SpreadAngle = Vector2.new(180, 180)
+	twinkle.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
 		NumberSequenceKeypoint.new(1, 0),
 	})
-	sparks.Parent = mist
+	twinkle.Parent = orb
 
-	-- plasma blobs, each on its own Weld so we can move it every frame
+	-- energy source: glowing core + two spinning rings + sloshing plasma blobs
+	local core, coreWeld = moving("EnergyCore", Vector3.new(0.14, 0.14, 0.14), GREEN_HOT, NEON, Enum.PartType.Ball)
+	local light = Instance.new("PointLight")
+	light.Color = GREEN
+	light.Range = 7
+	light.Brightness = 2
+	light.Parent = core
+
+	local rings = {}
+	for i = 1, 2 do
+		local ring, w = moving("EnergyRing" .. i, Vector3.new(0.02, 0.34, 0.34), GREEN, NEON, CYL)
+		ring.Transparency = 0.3
+		rings[i] = w
+	end
+
 	local blobs = {}
 	for i = 1, PLASMA_COUNT do
-		local size = 0.13 + (i % 3) * 0.035
-		local blob = part("Plasma" .. i, Vector3.new(size, size, size), TUBE_CENTER,
-			(i % 2 == 0) and GREEN_HOT or GREEN, Enum.Material.Neon, Enum.PartType.Ball)
-		blob.CastShadow = false
-		local weld = Instance.new("Weld")
-		weld.Part0 = handle
-		weld.Part1 = blob
-		weld.C0 = TUBE_CENTER
-		weld.Parent = blob
-		table.insert(blobs, { part = blob, weld = weld, index = i, baseSize = size })
+		local size = 0.06 + (i % 3) * 0.02
+		local blob, w = moving("Plasma" .. i, Vector3.new(size, size, size), (i % 2 == 0) and GREEN_HOT or GREEN, NEON, Enum.PartType.Ball)
+		table.insert(blobs, { part = blob, weld = w, index = i, baseSize = size })
 	end
 
 	local sound
@@ -214,35 +281,46 @@ local function buildTool()
 	end
 
 	return tool, {
-		blobs = blobs,
-		tubeLight = tubeLight,
 		handle = handle,
+		blobs = blobs,
+		core = core,
+		coreWeld = coreWeld,
+		rings = rings,
+		light = light,
 		display = display,
+		muzzle = muzzle,
+		muzzleSize = muzzle.Size,
+		glow = glow,
+		sound = sound,
 		slosh = Vector3.zero,
 		lastPos = nil,
 		lastVel = Vector3.zero,
-		muzzle = muzzle,
-		glow = glow,
-		sound = sound,
 		shotAt = 0,
 	}
 end
 
 --==============================================================
---  portal effect: a swirling green vortex orb (only you see it)
+--  portal: flat liquid swirl with a wobbly glowing rim
 --==============================================================
-local ARMS = 5             -- spiral arms
-local ARM_SEGMENTS = 9     -- pieces per arm
+local ARMS = 4
+local ARM_SEGMENTS = 10
+local RIM_BLOBS = 22
+local FACE = CFrame.Angles(0, math.rad(90), 0)   -- cylinders lie along X; turn them to face forward
+local TAU = math.pi * 2
 
-local function makePortal(position, facing)
-	local base = CFrame.lookAt(position, position + facing)   -- -Z = facing
+local function makePortal(center, facing)
+	local th = theme()
+	local base = CFrame.lookAt(center, center + facing)
+	local size = cfg.portalSize
+	local lifetime = cfg.portalLifetime
+
 	local model = Instance.new("Model")
 	model.Name = "Portal"
 
 	local function piece(shape, color, material, transparency)
 		local p = Instance.new("Part")
 		p.Shape = shape
-		p.Material = material or Enum.Material.Neon
+		p.Material = material or NEON
 		p.Color = color
 		p.Transparency = transparency or 0
 		p.Anchored = true
@@ -256,51 +334,56 @@ local function makePortal(position, facing)
 		return p
 	end
 
-	-- layered discs (cylinders lie along X, so turn them to face forward)
-	local FACE = CFrame.Angles(0, math.rad(90), 0)
+	-- discs: inner ones are thicker, so they show from both sides
 	local layers = {
-		{ part = piece(Enum.PartType.Cylinder, GREEN, Enum.Material.ForceField), scale = 1.15, thick = 0.2 },
-		{ part = piece(Enum.PartType.Cylinder, GREEN), scale = 1.0, thick = 0.25 },
-		{ part = piece(Enum.PartType.Cylinder, Color3.fromRGB(90, 235, 40)), scale = 0.8, thick = 0.3 },
-		{ part = piece(Enum.PartType.Cylinder, GREEN_DEEP), scale = 0.45, thick = 0.35 },
-		{ part = piece(Enum.PartType.Cylinder, GREEN_HOT), scale = 0.14, thick = 0.4 },
+		{ p = piece(CYL, th.rim, Enum.Material.ForceField), scale = 1.14, thick = 0.06 },
+		{ p = piece(CYL, th.rim), scale = 1.0, thick = 0.12 },
+		{ p = piece(CYL, th.mid), scale = 0.86, thick = 0.2 },
+		{ p = piece(CYL, th.deep), scale = 0.64, thick = 0.28 },
+		{ p = piece(CYL, th.mid), scale = 0.3, thick = 0.34 },
+		{ p = piece(CYL, th.core), scale = 0.14, thick = 0.4 },
 	}
 
-	-- spiral arms: small glowing balls laid out on a spiral, spun every frame
-	local arms = {}
-	for a = 1, ARMS do
-		for s = 1, ARM_SEGMENTS do
-			local f = s / ARM_SEGMENTS
-			local ball = piece(Enum.PartType.Ball, (s % 2 == 0) and GREEN_HOT or GREEN)
-			ball.Transparency = 0.15 + f * 0.4
-			table.insert(arms, { part = ball, arm = a, f = f })
+	-- flat glowing streaks laid on spiral arms, on both faces
+	local streaks = {}
+	for side = -1, 1, 2 do
+		for a = 1, ARMS do
+			for s = 1, ARM_SEGMENTS do
+				local f = s / ARM_SEGMENTS
+				local p = piece(BLOCK, th.core:Lerp(th.mid, f))
+				p.Transparency = 0.05 + 0.45 * f
+				table.insert(streaks, { p = p, arm = a, f = f, side = side })
+			end
 		end
 	end
 
-	local light = Instance.new("PointLight")
-	light.Color = GREEN
-	light.Range = 22
-	light.Brightness = 3
-	light.Parent = layers[2].part
+	-- bubbly rim
+	local rim = {}
+	for i = 1, RIM_BLOBS do
+		rim[i] = { p = piece(Enum.PartType.Ball, th.rim, NEON, 0.1), i = i }
+	end
 
-	-- sparks pulled in toward the middle
-	local emitterHolder = layers[1].part
+	local light = Instance.new("PointLight")
+	light.Color = th.rim
+	light.Range = math.clamp(size * 2.5, 8, 60)
+	light.Brightness = 3
+	light.Parent = layers[2].p
+
 	local sparks = Instance.new("ParticleEmitter")
 	sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	sparks.Color = ColorSequence.new(GREEN_HOT, GREEN)
+	sparks.Color = ColorSequence.new(th.core, th.rim)
 	sparks.LightEmission = 1
-	sparks.Rate = 90
-	sparks.Lifetime = NumberRange.new(0.5, 1)
-	sparks.Speed = NumberRange.new(-6, -3)        -- negative = inward
-	sparks.Shape = Enum.ParticleEmitterShape.Disc
-	sparks.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
-	sparks.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+	sparks.Rate = 50
+	sparks.Lifetime = NumberRange.new(0.3, 0.6)
+	sparks.Speed = NumberRange.new(2, 6)
+	sparks.Drag = 3
+	sparks.SpreadAngle = Vector2.new(180, 180)
 	sparks.RotSpeed = NumberRange.new(-200, 200)
 	sparks.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.7),
+		NumberSequenceKeypoint.new(0, 0.35),
 		NumberSequenceKeypoint.new(1, 0),
 	})
-	sparks.Parent = emitterHolder
+	sparks.Parent = layers[6].p
 
 	model.Parent = Workspace
 
@@ -308,31 +391,45 @@ local function makePortal(position, facing)
 	local conn
 	conn = RunService.RenderStepped:Connect(function()
 		local age = os.clock() - born
-		if age >= PORTAL_LIFETIME or not model.Parent then
+		if age >= lifetime or not model.Parent then
 			conn:Disconnect()
 			model:Destroy()
 			return
 		end
 		-- open with a bounce, close with a quick shrink
 		local open = math.clamp(age / 0.35, 0, 1)
-		open = 1 + 2.2 * (open - 1) ^ 3 + 1.2 * (open - 1) ^ 2   -- "back" ease
-		local close = math.clamp((PORTAL_LIFETIME - age) / 0.3, 0, 1)
+		open = 1 + 2.2 * (open - 1) ^ 3 + 1.2 * (open - 1) ^ 2
+		local close = math.clamp((lifetime - age) / 0.3, 0, 1)
 		local k = math.max(open * close, 0.01)
-		local r = PORTAL_SIZE / 2 * k
-		local spin = age * 4
+		local r = size / 2 * k
+		local spin = age * 3
 
 		for i, layer in ipairs(layers) do
-			local d = PORTAL_SIZE * layer.scale * k * (1 + 0.03 * math.sin(age * 9 + i))
-			layer.part.Size = Vector3.new(layer.thick, d, d)
-			layer.part.CFrame = base * CFrame.new(0, 0, -0.05 * i) * CFrame.Angles(0, 0, spin * (i % 2 == 0 and 1 or -1)) * FACE
+			local wob = 1 + 0.025 * math.sin(age * 8 + i * 1.3)
+			if i == #layers then
+				wob = 1 + 0.25 * math.sin(age * 10)
+			end
+			local d = size * layer.scale * k * wob
+			layer.p.Size = Vector3.new(layer.thick, d, d)
+			layer.p.CFrame = base * FACE
 		end
-		for _, seg in ipairs(arms) do
-			local angle = spin * 1.6 + seg.arm * (2 * math.pi / ARMS) + seg.f * 4.5
-			local dist = r * 0.95 * seg.f
-			local size = (0.25 + 0.55 * seg.f) * k
-			seg.part.Size = Vector3.new(size, size, size)
-			seg.part.CFrame = base * CFrame.new(math.cos(angle) * dist, math.sin(angle) * dist, -0.4)
+
+		for _, s in ipairs(streaks) do
+			local ang = spin + s.arm * (TAU / ARMS) + s.f * 3.2
+			local dist = r * (0.12 + 0.75 * s.f)
+			s.p.Size = Vector3.new(r * (0.18 + 0.3 * s.f), r * (0.05 + 0.05 * s.f), 0.05)
+			s.p.CFrame = base * CFrame.new(math.cos(ang) * dist, math.sin(ang) * dist, s.side * 0.21)
+				* CFrame.Angles(0, 0, ang + math.pi / 2 - 0.5)
 		end
+
+		for _, b in ipairs(rim) do
+			local ang = (b.i / RIM_BLOBS) * TAU - spin * 0.5
+			local wob = 0.96 + 0.06 * math.sin(age * 7 + b.i * 1.9)
+			local bs = r * (0.16 + 0.05 * math.sin(age * 9 + b.i))
+			b.p.Size = Vector3.new(bs, bs, bs)
+			b.p.CFrame = base * CFrame.new(math.cos(ang) * r * wob, math.sin(ang) * r * wob, 0)
+		end
+
 		light.Brightness = 3 + math.sin(age * 12)
 		sparks.Enabled = close > 0.5
 	end)
@@ -345,12 +442,12 @@ local currentTool, gun
 local equipped = false
 local lastShot = 0
 local busy = false
-local saved = {}          -- { {name = "...", pos = Vector3}, ... }
-local statusLabel
+local statusLabels = {}
+local dimGui, adminGui
 
 local function setStatus(text)
-	if statusLabel then
-		statusLabel.Text = text
+	for _, l in ipairs(statusLabels) do
+		l.Text = text
 	end
 end
 
@@ -372,22 +469,21 @@ local function playShotAnimation(tool)
 
 	local flash = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true)
 	TweenService:Create(gun.glow, flash, { Brightness = 8, Range = 16 }):Play()
-	TweenService:Create(gun.muzzle, flash, { Size = Vector3.new(0.7, 0.7, 0.7) }):Play()
+	TweenService:Create(gun.muzzle, flash, { Size = gun.muzzleSize * 1.6 }):Play()
 	if gun.sound then
 		gun.sound:Play()
 	end
 end
 
 --==============================================================
---  moving plasma
+--  energy ball animation (sloshes when the gun moves)
 --==============================================================
-RunService.RenderStepped:Connect(function(dt)
+track(RunService.RenderStepped:Connect(function(dt)
 	if not (gun and currentTool and currentTool.Parent) then return end
 	local t = os.clock()
 	local surge = math.clamp(1 - (t - gun.shotAt) / 0.7, 0, 1)
 	dt = math.max(dt, 1 / 240)
 
-	-- real sloshing: the liquid lags behind when the gun moves and sinks toward "down"
 	local hcf = gun.handle.CFrame
 	local pos = hcf.Position
 	local vel = gun.lastPos and (pos - gun.lastPos) / dt or Vector3.zero
@@ -395,65 +491,79 @@ RunService.RenderStepped:Connect(function(dt)
 	gun.lastPos, gun.lastVel = pos, vel
 	local localAccel = hcf:VectorToObjectSpace(accel)
 	local localDown = hcf:VectorToObjectSpace(Vector3.new(0, -1, 0))
-	local target = localDown * 0.07 - localAccel * 0.0025
-	if target.Magnitude > 0.16 then
-		target = target.Unit * 0.16
+	local target = localDown * 0.06 - localAccel * 0.002
+	if target.Magnitude > 0.1 then
+		target = target.Unit * 0.1
 	end
 	gun.slosh = gun.slosh:Lerp(target, math.clamp(dt * 9, 0, 1))
-	local sx, sy = gun.slosh.X, gun.slosh.Y
-	local sz = math.clamp(gun.slosh.Z * 3, -TUBE_HALF, TUBE_HALF)
-	local wobble = 0.04 * math.clamp(localAccel.Magnitude / 60, 0, 1)
+	local wobble = 0.03 * math.clamp(localAccel.Magnitude / 60, 0, 1)
 
 	for _, blob in ipairs(gun.blobs) do
 		local i = blob.index
-		local along = math.sin(t * (1.3 + i * 0.45) + i * 1.7) * TUBE_HALF * 0.6 + sz
-		along = math.clamp(along, -TUBE_HALF, TUBE_HALF)
-		local angle = t * (2.2 + i * 0.6) + i
-		local radius = 0.04 + 0.02 * math.sin(t * 3 + i) + 0.05 * surge + wobble
-		local x = math.clamp(math.cos(angle) * radius + sx, -0.13, 0.13)
-		local y = math.clamp(math.sin(angle) * radius + sy, -0.13, 0.13)
-		blob.weld.C0 = TUBE_CENTER * CFrame.new(x, y, along)
+		local a = t * (2.2 + i * 0.6) + i
+		local rad = 0.05 + 0.02 * math.sin(t * 3 + i) + 0.04 * surge + wobble
+		local offset = Vector3.new(math.cos(a) * rad, math.sin(a * 1.3) * rad * 0.7, math.sin(a) * rad) + gun.slosh
+		if offset.Magnitude > 0.13 then
+			offset = offset.Unit * 0.13
+		end
+		blob.weld.C0 = ORB_CENTER * CFrame.new(offset)
 		local s = blob.baseSize * (1 + 0.25 * math.sin(t * 5 + i * 2) + 0.6 * surge)
 		blob.part.Size = Vector3.new(s, s, s)
 	end
-	gun.tubeLight.Brightness = 1.5 + 0.5 * math.sin(t * 7) + 4 * surge
 
-	-- side display: READY, or the seconds left while recharging
-	local left = COOLDOWN - (os.clock() - lastShot)
+	local spin = t * (2 + 10 * surge)
+	local c = 0.14 * (1 + 0.2 * math.sin(t * 4) + 0.6 * surge)
+	gun.core.Size = Vector3.new(c, c, c)
+	gun.coreWeld.C0 = ORB_CENTER * CFrame.new(gun.slosh * 0.3)
+	gun.light.Brightness = 2 + math.sin(t * 4) + 6 * surge
+	gun.rings[1].C0 = ORB_CENTER * CFrame.Angles(spin, spin * 0.7, 0)
+	gun.rings[2].C0 = ORB_CENTER * CFrame.Angles(0, -spin * 1.3, spin)
+
+	local left = cfg.cooldown - (t - lastShot)
 	gun.display.Text = (left > 0) and string.format("%.1f", left) or "READY"
-end)
+end))
 
 --==============================================================
 --  teleport (local)
 --==============================================================
-local function teleport(target)
-	if not equipped or busy then return end
+-- snap = true: land on the ground under the target (gun shots)
+-- fromPanel = true: works without holding the gun and skips the gun cooldown
+local function teleport(target, snap, fromPanel)
+	if busy then return end
 	if typeof(target) ~= "Vector3" or target ~= target then return end
-
-	local now = os.clock()
-	if now - lastShot < COOLDOWN then
-		setStatus("Recharging...")
-		return
+	if not fromPanel then
+		if not equipped then return end
+		if os.clock() - lastShot < cfg.cooldown then
+			setStatus("Recharging...")
+			return
+		end
 	end
 
 	local char = player.Character
 	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not (humanoid and root) or humanoid.Health <= 0 then return end
-	if (target - root.Position).Magnitude > MAX_DISTANCE then
-		setStatus("Too far (max " .. MAX_DISTANCE .. ")")
+	if (target - root.Position).Magnitude > cfg.maxDistance then
+		setStatus("Too far (max " .. cfg.maxDistance .. ")")
 		return
 	end
 
-	lastShot = now
+	if not fromPanel then
+		lastShot = os.clock()
+	end
 	busy = true
-	setStatus(string.format("Portal to %d, %d, %d", target.X, target.Y, target.Z))
+	setStatus(string.format("Portal to %d, %d, %d", math.floor(target.X), math.floor(target.Y), math.floor(target.Z)))
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { char }
-	local hit = Workspace:Raycast(target + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), params)
-	local ground = hit and hit.Position or target
+	local standAt
+	if snap then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { char }
+		local hit = Workspace:Raycast(target + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), params)
+		standAt = (hit and hit.Position or target) + Vector3.new(0, 3.5, 0)
+	else
+		standAt = target
+	end
 
 	local look = root.CFrame.LookVector
 	local flat = Vector3.new(look.X, 0, look.Z)
@@ -462,14 +572,19 @@ local function teleport(target)
 	end
 	flat = flat.Unit
 
-	playShotAnimation(currentTool)
-	makePortal(root.Position + flat * 6 + Vector3.new(0, 1, 0), flat)
-	makePortal(ground + Vector3.new(0, PORTAL_SIZE / 2, 0), flat)
+	if equipped and currentTool and gun then
+		playShotAnimation(currentTool)
+	end
+	local half = cfg.portalSize / 2
+	if cfg.showPortals then
+		makePortal(root.Position + flat * math.max(6, half + 2) + Vector3.new(0, half - 3, 0), flat)
+		makePortal(standAt + Vector3.new(0, half - 3, 0), flat)
+		task.wait(cfg.travelDelay)
+	end
 
-	task.wait(TRAVEL_DELAY)
 	if char.Parent and humanoid.Health > 0 then
-		local standAt = ground + Vector3.new(0, 3.5, 0) + flat * 3
-		char:PivotTo(CFrame.lookAt(standAt, standAt + flat))
+		local p = standAt + flat * (cfg.showPortals and 3 or 0)
+		char:PivotTo(CFrame.lookAt(p, p + flat))
 		root.AssemblyLinearVelocity = Vector3.zero
 	end
 	busy = false
@@ -484,7 +599,7 @@ local function aimPosition()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { player.Character }
 
-	local hit = Workspace:Raycast(ray.Origin, ray.Direction * AIM_RANGE, params)
+	local hit = Workspace:Raycast(ray.Origin, ray.Direction * cfg.aimRange, params)
 	if hit then
 		return hit.Position
 	end
@@ -492,7 +607,7 @@ local function aimPosition()
 end
 
 --==============================================================
---  panel: "SELECT A DIMENSION"
+--  dimension panel ("SELECT A DIMENSION", shown while holding the gun)
 --==============================================================
 -- Edit these lists: each dimension is a name + the spot to teleport to.
 local DIMENSIONS = {
@@ -507,18 +622,12 @@ local DIMENSIONS = {
 	},
 }
 
-local TEXT_COLOR = Color3.fromRGB(70, 255, 200)   -- cyan-green letters
-local TEXT_STROKE = Color3.fromRGB(10, 60, 50)
-local BTN_LIGHT = Color3.fromRGB(200, 205, 210)
-local BTN_DARK = Color3.fromRGB(70, 74, 80)
-local BORDER = Color3.fromRGB(30, 32, 36)
+local TEXT_COLOR = rgb(70, 255, 200)
+local TEXT_STROKE = rgb(10, 60, 50)
+local BTN_LIGHT = rgb(200, 205, 210)
+local BTN_DARK = rgb(70, 74, 80)
+local BORDER = rgb(30, 32, 36)
 local FONT = Enum.Font.LuckiestGuy
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "PortalGunPanel"
-gui.ResetOnSpawn = false
-gui.Enabled = false
-gui.Parent = player:WaitForChild("PlayerGui")
 
 local function corner(parent, radius)
 	local c = Instance.new("UICorner")
@@ -526,12 +635,14 @@ local function corner(parent, radius)
 	c.Parent = parent
 end
 
-local function outline(parent, thickness)
+local function outline(parent, thickness, color, transparency)
 	local s = Instance.new("UIStroke")
-	s.Color = BORDER
+	s.Color = color or BORDER
 	s.Thickness = thickness or 2
+	s.Transparency = transparency or 0
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	s.Parent = parent
+	return s
 end
 
 local function styleText(obj, size)
@@ -563,128 +674,718 @@ local function bigButton(parent, text, size, color)
 	return b
 end
 
--- whole panel sits on the right side
-local root = Instance.new("Frame")
-root.Name = "Root"
-root.BackgroundTransparency = 1
-root.AnchorPoint = Vector2.new(1, 0.5)
-root.Position = UDim2.new(1, -12, 0.5, 0)
-root.Size = UDim2.new(0, 440, 0, 380)
-root.Parent = gui
+dimGui = Instance.new("ScreenGui")
+dimGui.Name = "PortalGunPanel"
+dimGui.ResetOnSpawn = false
+dimGui.Enabled = false
+dimGui.Parent = player:WaitForChild("PlayerGui")
 
-local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Text = "SELECT A DIMENSION"
-title.Size = UDim2.new(0, 300, 0, 40)
-title.Position = UDim2.new(1, -300, 0, 0)
-title.Parent = root
-styleText(title, 32)
+local function refreshDimGui()
+	dimGui.Enabled = equipped and cfg.showDimensions
+end
 
--- dimension list
-local list = Instance.new("ScrollingFrame")
-list.Name = "List"
-list.Active = true
-list.Position = UDim2.new(1, -290, 0, 50)
-list.Size = UDim2.new(0, 290, 0, 300)
-list.BackgroundColor3 = Color3.fromRGB(45, 48, 54)
-list.BackgroundTransparency = 0.35
-list.ScrollBarThickness = 6
-list.ScrollBarImageColor3 = BTN_LIGHT
-list.AutomaticCanvasSize = Enum.AutomaticSize.Y
-list.CanvasSize = UDim2.new(0, 0, 0, 0)
-list.Parent = root
-corner(list, 10)
-outline(list, 2)
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 6)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = list
-local listPad = Instance.new("UIPadding")
-listPad.PaddingTop = UDim.new(0, 6)
-listPad.PaddingBottom = UDim.new(0, 6)
-listPad.PaddingLeft = UDim.new(0, 6)
-listPad.PaddingRight = UDim.new(0, 14)
-listPad.Parent = list
+do
+	local root = Instance.new("Frame")
+	root.Name = "Root"
+	root.BackgroundTransparency = 1
+	root.AnchorPoint = Vector2.new(1, 0.5)
+	root.Position = UDim2.new(1, -12, 0.5, 0)
+	root.Size = UDim2.new(0, 440, 0, 380)
+	root.Parent = dimGui
 
--- NEW / OG tabs on the left of the list
-local tabs = {}
-local currentTab = "NEW"
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Text = "SELECT A DIMENSION"
+	title.Size = UDim2.new(0, 300, 0, 40)
+	title.Position = UDim2.new(1, -300, 0, 0)
+	title.Parent = root
+	styleText(title, 32)
 
-local function fillList()
-	for _, child in ipairs(list:GetChildren()) do
-		if child:IsA("TextButton") then
-			child:Destroy()
+	local list = Instance.new("ScrollingFrame")
+	list.Name = "List"
+	list.Active = true
+	list.Position = UDim2.new(1, -290, 0, 50)
+	list.Size = UDim2.new(0, 290, 0, 300)
+	list.BackgroundColor3 = rgb(45, 48, 54)
+	list.BackgroundTransparency = 0.35
+	list.ScrollBarThickness = 6
+	list.ScrollBarImageColor3 = BTN_LIGHT
+	list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	list.CanvasSize = UDim2.new(0, 0, 0, 0)
+	list.Parent = root
+	corner(list, 10)
+	outline(list, 2)
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 6)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = list
+	local listPad = Instance.new("UIPadding")
+	listPad.PaddingTop = UDim.new(0, 6)
+	listPad.PaddingBottom = UDim.new(0, 6)
+	listPad.PaddingLeft = UDim.new(0, 6)
+	listPad.PaddingRight = UDim.new(0, 14)
+	listPad.Parent = list
+
+	local tabs = {}
+	local currentTab = "NEW"
+
+	local function fillList()
+		for _, child in ipairs(list:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+		for i, dim in ipairs(DIMENSIONS[currentTab] or {}) do
+			local b = bigButton(list, dim.name, 36, (i % 2 == 0) and BTN_LIGHT or BTN_DARK)
+			b.Size = UDim2.new(1, 0, 0, 58)
+			b.LayoutOrder = i
+			b.Activated:Connect(function()
+				task.spawn(teleport, dim.pos, true, false)
+			end)
+		end
+		for name, tab in pairs(tabs) do
+			tab.BackgroundColor3 = (name == currentTab) and BTN_DARK or BTN_LIGHT
 		end
 	end
-	for i, dim in ipairs(DIMENSIONS[currentTab] or {}) do
-		local b = bigButton(list, dim.name, 36, (i % 2 == 0) and BTN_LIGHT or BTN_DARK)
-		b.Size = UDim2.new(1, 0, 0, 58)
-		b.LayoutOrder = i
+
+	for i, name in ipairs({ "NEW", "OG" }) do
+		local tab = bigButton(root, name, 34)
+		tab.Size = UDim2.new(0, 120, 0, 60)
+		tab.Position = UDim2.new(1, -420, 0, 150 + (i - 1) * 72)
+		tab.Activated:Connect(function()
+			currentTab = name
+			fillList()
+		end)
+		tabs[name] = tab
+	end
+
+	local status = Instance.new("TextLabel")
+	status.BackgroundTransparency = 1
+	status.Text = ""
+	status.Size = UDim2.new(0, 290, 0, 22)
+	status.Position = UDim2.new(1, -290, 0, 356)
+	status.Parent = root
+	styleText(status, 18)
+	table.insert(statusLabels, status)
+
+	fillList()
+end
+
+--==============================================================
+--  admin panel
+--==============================================================
+local giveGun -- defined below
+
+local BG = rgb(14, 16, 20)
+local BG2 = rgb(24, 27, 33)
+local BG3 = rgb(38, 42, 50)
+local TXT = rgb(230, 235, 240)
+local SUB = rgb(140, 150, 162)
+local ACCENT = GREEN
+local UI_FONT = Enum.Font.GothamBold
+
+adminGui = Instance.new("ScreenGui")
+adminGui.Name = "PortalGunAdmin"
+adminGui.ResetOnSpawn = false
+adminGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+adminGui.Parent = player:WaitForChild("PlayerGui")
+
+local refreshers = {}
+local orderCounter = 0
+local function nextOrder()
+	orderCounter += 1
+	return orderCounter
+end
+
+local function label(parent, text, size, color, align)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Font = UI_FONT
+	l.Text = text
+	l.TextSize = size or 14
+	l.TextColor3 = color or TXT
+	l.TextXAlignment = align or Enum.TextXAlignment.Left
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	l.Parent = parent
+	return l
+end
+
+local function button(parent, text, color, textColor)
+	local b = Instance.new("TextButton")
+	b.AutoButtonColor = true
+	b.BackgroundColor3 = color or BG3
+	b.Font = UI_FONT
+	b.TextSize = 14
+	b.TextColor3 = textColor or TXT
+	b.Text = text
+	b.Parent = parent
+	corner(b, 6)
+	return b
+end
+
+local function textbox(parent, placeholder)
+	local t = Instance.new("TextBox")
+	t.BackgroundColor3 = BG3
+	t.Font = Enum.Font.Gotham
+	t.TextSize = 14
+	t.TextColor3 = TXT
+	t.PlaceholderColor3 = SUB
+	t.PlaceholderText = placeholder
+	t.Text = ""
+	t.ClearTextOnFocus = false
+	t.Parent = parent
+	corner(t, 6)
+	return t
+end
+
+local function row(page, height, transparent)
+	local f = Instance.new("Frame")
+	f.BackgroundColor3 = BG2
+	f.BackgroundTransparency = transparent and 1 or 0
+	f.Size = UDim2.new(1, 0, 0, height)
+	f.LayoutOrder = nextOrder()
+	f.Parent = page
+	corner(f, 8)
+	return f
+end
+
+local function section(page, text)
+	local r = row(page, 22, true)
+	label(r, text, 12, ACCENT).Size = UDim2.new(1, 0, 1, 0)
+	return r
+end
+
+local function isPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+end
+local function isMove(input)
+	return input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function slider(page, text, key, min, max, step, fmt)
+	local r = row(page, 54)
+	local name = label(r, text, 14, TXT)
+	name.Position = UDim2.new(0, 12, 0, 8)
+	name.Size = UDim2.new(0.6, 0, 0, 18)
+	local value = label(r, "", 14, ACCENT, Enum.TextXAlignment.Right)
+	value.Position = UDim2.new(0.4, -12, 0, 8)
+	value.Size = UDim2.new(0.6, 0, 0, 18)
+
+	local bar = Instance.new("Frame")
+	bar.BackgroundColor3 = BG3
+	bar.Position = UDim2.new(0, 12, 0, 36)
+	bar.Size = UDim2.new(1, -24, 0, 6)
+	bar.Parent = r
+	corner(bar, 3)
+	local fill = Instance.new("Frame")
+	fill.BackgroundColor3 = ACCENT
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.Parent = bar
+	corner(fill, 3)
+	local knob = Instance.new("Frame")
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.BackgroundColor3 = TXT
+	knob.Size = UDim2.new(0, 14, 0, 14)
+	knob.Parent = bar
+	corner(knob, 7)
+
+	local function show()
+		local a = math.clamp((cfg[key] - min) / (max - min), 0, 1)
+		fill.Size = UDim2.new(a, 0, 1, 0)
+		knob.Position = UDim2.new(a, 0, 0.5, 0)
+		value.Text = string.format(fmt, cfg[key])
+	end
+	local function setFromX(x)
+		local a = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+		local v = min + a * (max - min)
+		v = math.floor(v / step + 0.5) * step
+		cfg[key] = math.clamp(v, min, max)
+		show()
+	end
+
+	local hit = Instance.new("TextButton")
+	hit.BackgroundTransparency = 1
+	hit.Text = ""
+	hit.Position = UDim2.new(0, 12, 0, 26)
+	hit.Size = UDim2.new(1, -24, 0, 26)
+	hit.Parent = r
+	local dragging = false
+	hit.InputBegan:Connect(function(input)
+		if isPress(input) then
+			dragging = true
+			setFromX(input.Position.X)
+		end
+	end)
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragging and isMove(input) then
+			setFromX(input.Position.X)
+		end
+	end))
+	track(UserInputService.InputEnded:Connect(function(input)
+		if dragging and isPress(input) then
+			dragging = false
+			saveCfg()
+		end
+	end))
+
+	table.insert(refreshers, show)
+	show()
+end
+
+local function toggle(page, text, key, onChange)
+	local r = row(page, 38)
+	local name = label(r, text, 14, TXT)
+	name.Position = UDim2.new(0, 12, 0, 0)
+	name.Size = UDim2.new(1, -90, 1, 0)
+	local b = button(r, "", BG3)
+	b.AnchorPoint = Vector2.new(1, 0.5)
+	b.Position = UDim2.new(1, -10, 0.5, 0)
+	b.Size = UDim2.new(0, 64, 0, 24)
+	local function show()
+		b.Text = cfg[key] and "ON" or "OFF"
+		b.BackgroundColor3 = cfg[key] and ACCENT or BG3
+		b.TextColor3 = cfg[key] and BG or SUB
+	end
+	b.Activated:Connect(function()
+		cfg[key] = not cfg[key]
+		show()
+		saveCfg()
+		if onChange then onChange() end
+	end)
+	table.insert(refreshers, show)
+	show()
+end
+
+local function refreshAll()
+	for _, f in ipairs(refreshers) do
+		f()
+	end
+	refreshDimGui()
+end
+
+-- open button on the left edge
+local openBtn = button(adminGui, "PG", BG, ACCENT)
+openBtn.AnchorPoint = Vector2.new(0, 0.5)
+openBtn.Position = UDim2.new(0, 10, 0.5, 0)
+openBtn.Size = UDim2.new(0, 44, 0, 44)
+openBtn.TextSize = 16
+outline(openBtn, 2, ACCENT, 0.3)
+
+-- window
+local win = Instance.new("Frame")
+win.Name = "Window"
+win.AnchorPoint = Vector2.new(0.5, 0.5)
+win.Position = UDim2.new(0.5, 0, 0.5, 0)
+win.Size = UDim2.new(0, 440, 0, 430)
+win.BackgroundColor3 = BG
+win.Visible = false
+win.Active = true
+win.Parent = adminGui
+corner(win, 12)
+outline(win, 2, ACCENT, 0.5)
+
+local header = Instance.new("Frame")
+header.BackgroundColor3 = BG2
+header.Size = UDim2.new(1, 0, 0, 42)
+header.Active = true
+header.Parent = win
+corner(header, 12)
+local title = label(header, "PORTAL GUN  ·  ADMIN", 16, ACCENT)
+title.Position = UDim2.new(0, 14, 0, 0)
+title.Size = UDim2.new(1, -60, 1, 0)
+local closeBtn = button(header, "X", BG3, SUB)
+closeBtn.AnchorPoint = Vector2.new(1, 0.5)
+closeBtn.Position = UDim2.new(1, -8, 0.5, 0)
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+
+local function setOpen(open)
+	win.Visible = open
+	if open then
+		refreshAll()
+	end
+end
+openBtn.Activated:Connect(function()
+	setOpen(not win.Visible)
+end)
+closeBtn.Activated:Connect(function()
+	setOpen(false)
+end)
+track(UserInputService.InputBegan:Connect(function(input, gpe)
+	if not gpe and input.KeyCode == ADMIN_KEY then
+		setOpen(not win.Visible)
+	end
+end))
+
+-- drag the window by its header
+do
+	local dragStart, startPos
+	header.InputBegan:Connect(function(input)
+		if isPress(input) then
+			dragStart, startPos = input.Position, win.Position
+		end
+	end)
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragStart and isMove(input) then
+			local d = input.Position - dragStart
+			win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
+	track(UserInputService.InputEnded:Connect(function(input)
+		if isPress(input) then
+			dragStart = nil
+		end
+	end))
+end
+
+-- status line at the bottom
+local adminStatus = label(win, "", 13, SUB)
+adminStatus.Position = UDim2.new(0, 14, 1, -26)
+adminStatus.Size = UDim2.new(1, -28, 0, 20)
+table.insert(statusLabels, adminStatus)
+
+-- tabs
+local tabBar = Instance.new("Frame")
+tabBar.BackgroundTransparency = 1
+tabBar.Position = UDim2.new(0, 10, 0, 50)
+tabBar.Size = UDim2.new(1, -20, 0, 30)
+tabBar.Parent = win
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 6)
+tabLayout.Parent = tabBar
+
+local pages, tabButtons = {}, {}
+local function showPage(name)
+	for n, page in pairs(pages) do
+		page.Visible = (n == name)
+		tabButtons[n].BackgroundColor3 = (n == name) and ACCENT or BG3
+		tabButtons[n].TextColor3 = (n == name) and BG or TXT
+	end
+end
+
+local function makePage(name)
+	local b = button(tabBar, name, BG3)
+	b.Size = UDim2.new(1 / 3, -4, 1, 0)
+	tabButtons[name] = b
+
+	local page = Instance.new("ScrollingFrame")
+	page.BackgroundTransparency = 1
+	page.BorderSizePixel = 0
+	page.Position = UDim2.new(0, 10, 0, 88)
+	page.Size = UDim2.new(1, -20, 1, -120)
+	page.ScrollBarThickness = 4
+	page.ScrollBarImageColor3 = ACCENT
+	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	page.CanvasSize = UDim2.new(0, 0, 0, 0)
+	page.Visible = false
+	page.Parent = win
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = page
+	local pad = Instance.new("UIPadding")
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.PaddingBottom = UDim.new(0, 8)
+	pad.Parent = page
+	pages[name] = page
+
+	b.Activated:Connect(function()
+		showPage(name)
+	end)
+	return page
+end
+
+local function myPosition()
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	return root and root.Position
+end
+
+---------------------------------------------------------------- TELEPORT tab
+local tpPage = makePage("TELEPORT")
+local refreshSaved, refreshPlayers
+
+do
+	section(tpPage, "COORDINATES")
+	local r = row(tpPage, 40, true)
+	local boxes = {}
+	for i, axis in ipairs({ "X", "Y", "Z" }) do
+		local b = textbox(r, axis)
+		b.Size = UDim2.new(1 / 3, -6, 1, 0)
+		b.Position = UDim2.new((i - 1) / 3, (i - 1) * 3, 0, 0)
+		boxes[i] = b
+	end
+
+	local r2 = row(tpPage, 36, true)
+	local goBtn = button(r2, "TELEPORT", ACCENT, BG)
+	goBtn.Size = UDim2.new(0.5, -4, 1, 0)
+	local hereBtn = button(r2, "MY POSITION")
+	hereBtn.Position = UDim2.new(0.5, 4, 0, 0)
+	hereBtn.Size = UDim2.new(0.5, -4, 1, 0)
+
+	local function readBoxes()
+		local x, y, z = tonumber(boxes[1].Text), tonumber(boxes[2].Text), tonumber(boxes[3].Text)
+		if x and y and z then
+			return Vector3.new(x, y, z)
+		end
+	end
+
+	goBtn.Activated:Connect(function()
+		local v = readBoxes()
+		if v then
+			task.spawn(teleport, v, false, true)
+		else
+			setStatus("Type numbers in X, Y and Z")
+		end
+	end)
+	hereBtn.Activated:Connect(function()
+		local p = myPosition()
+		if p then
+			boxes[1].Text = tostring(math.floor(p.X + 0.5))
+			boxes[2].Text = tostring(math.floor(p.Y + 0.5))
+			boxes[3].Text = tostring(math.floor(p.Z + 0.5))
+		end
+	end)
+
+	section(tpPage, "SAVED PLACES")
+	local r3 = row(tpPage, 36, true)
+	local nameBox = textbox(r3, "Name")
+	nameBox.Size = UDim2.new(0.6, -4, 1, 0)
+	local saveBtn = button(r3, "SAVE")
+	saveBtn.Position = UDim2.new(0.6, 4, 0, 0)
+	saveBtn.Size = UDim2.new(0.4, -4, 1, 0)
+
+	local savedList = Instance.new("Frame")
+	savedList.BackgroundTransparency = 1
+	savedList.Size = UDim2.new(1, 0, 0, 0)
+	savedList.AutomaticSize = Enum.AutomaticSize.Y
+	savedList.LayoutOrder = nextOrder()
+	savedList.Parent = tpPage
+	local sl = Instance.new("UIListLayout")
+	sl.Padding = UDim.new(0, 6)
+	sl.SortOrder = Enum.SortOrder.LayoutOrder
+	sl.Parent = savedList
+
+	refreshSaved = function()
+		for _, c in ipairs(savedList:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+		if #cfg.saved == 0 then
+			local e = row(savedList, 30, true)
+			label(e, "  Nothing saved yet (uses X/Y/Z, or where you stand)", 12, SUB).Size = UDim2.new(1, 0, 1, 0)
+			return
+		end
+		for i, spot in ipairs(cfg.saved) do
+			local e = row(savedList, 36)
+			e.LayoutOrder = i
+			local l = label(e, string.format("%s   (%d, %d, %d)", spot.name, spot.x, spot.y, spot.z), 13, TXT)
+			l.Position = UDim2.new(0, 10, 0, 0)
+			l.Size = UDim2.new(1, -130, 1, 0)
+			local go = button(e, "GO", ACCENT, BG)
+			go.Position = UDim2.new(1, -116, 0.5, -13)
+			go.Size = UDim2.new(0, 56, 0, 26)
+			local del = button(e, "DEL", rgb(90, 30, 30))
+			del.Position = UDim2.new(1, -54, 0.5, -13)
+			del.Size = UDim2.new(0, 46, 0, 26)
+			go.Activated:Connect(function()
+				task.spawn(teleport, Vector3.new(spot.x, spot.y, spot.z), false, true)
+			end)
+			del.Activated:Connect(function()
+				table.remove(cfg.saved, i)
+				saveCfg()
+				refreshSaved()
+			end)
+		end
+	end
+
+	saveBtn.Activated:Connect(function()
+		local v = readBoxes() or myPosition()
+		if not v then return end
+		local name = nameBox.Text ~= "" and nameBox.Text or ("Spot " .. (#cfg.saved + 1))
+		table.insert(cfg.saved, { name = name, x = math.floor(v.X + 0.5), y = math.floor(v.Y + 0.5), z = math.floor(v.Z + 0.5) })
+		nameBox.Text = ""
+		saveCfg()
+		refreshSaved()
+		setStatus("Saved " .. name)
+	end)
+
+	section(tpPage, "PLAYERS")
+	local playerList = Instance.new("Frame")
+	playerList.BackgroundTransparency = 1
+	playerList.Size = UDim2.new(1, 0, 0, 0)
+	playerList.AutomaticSize = Enum.AutomaticSize.Y
+	playerList.LayoutOrder = nextOrder()
+	playerList.Parent = tpPage
+	local pl = Instance.new("UIListLayout")
+	pl.Padding = UDim.new(0, 6)
+	pl.SortOrder = Enum.SortOrder.LayoutOrder
+	pl.Parent = playerList
+
+	refreshPlayers = function()
+		for _, c in ipairs(playerList:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+		local count = 0
+		for _, other in ipairs(Players:GetPlayers()) do
+			if other ~= player then
+				count += 1
+				local e = row(playerList, 36)
+				e.LayoutOrder = count
+				local l = label(e, other.DisplayName .. "  @" .. other.Name, 13, TXT)
+				l.Position = UDim2.new(0, 10, 0, 0)
+				l.Size = UDim2.new(1, -80, 1, 0)
+				local go = button(e, "GO", ACCENT, BG)
+				go.Position = UDim2.new(1, -66, 0.5, -13)
+				go.Size = UDim2.new(0, 56, 0, 26)
+				go.Activated:Connect(function()
+					local hrp = other.Character and other.Character:FindFirstChild("HumanoidRootPart")
+					if hrp then
+						task.spawn(teleport, hrp.Position + Vector3.new(0, 0, 4), false, true)
+					else
+						setStatus(other.DisplayName .. " has no character")
+					end
+				end)
+			end
+		end
+		if count == 0 then
+			local e = row(playerList, 30, true)
+			label(e, "  No other players", 12, SUB).Size = UDim2.new(1, 0, 1, 0)
+		end
+	end
+	track(Players.PlayerAdded:Connect(function() refreshPlayers() end))
+	track(Players.PlayerRemoving:Connect(function() task.defer(refreshPlayers) end))
+
+	refreshSaved()
+	refreshPlayers()
+end
+
+---------------------------------------------------------------- PORTAL tab
+local portalPage = makePage("PORTAL")
+do
+	section(portalPage, "PORTAL")
+	slider(portalPage, "Portal lifetime", "portalLifetime", 0.5, 30, 0.5, "%.1f s")
+	slider(portalPage, "Portal size", "portalSize", 3, 30, 1, "%d studs")
+	slider(portalPage, "Travel delay", "travelDelay", 0, 2, 0.05, "%.2f s")
+	toggle(portalPage, "Show portals (off = instant teleport)", "showPortals")
+
+	section(portalPage, "COLOR")
+	local r = row(portalPage, 40, true)
+	local strokes = {}
+	for i, th in ipairs(THEMES) do
+		local b = button(r, "", th.rim)
+		b.Size = UDim2.new(1 / #THEMES, -6, 1, 0)
+		b.Position = UDim2.new((i - 1) / #THEMES, 3, 0, 0)
+		strokes[i] = outline(b, 3, TXT, 1)
 		b.Activated:Connect(function()
-			task.spawn(teleport, dim.pos)
+			cfg.theme = i
+			saveCfg()
+			refreshAll()
 		end)
 	end
-	for name, tab in pairs(tabs) do
-		tab.BackgroundColor3 = (name == currentTab) and BTN_DARK or BTN_LIGHT
-	end
-end
-
-for i, name in ipairs({ "NEW", "OG" }) do
-	local tab = bigButton(root, name, 34)
-	tab.Size = UDim2.new(0, 120, 0, 60)
-	tab.Position = UDim2.new(1, -420, 0, 150 + (i - 1) * 72)
-	tab.Activated:Connect(function()
-		currentTab = name
-		fillList()
+	table.insert(refreshers, function()
+		for i, s in ipairs(strokes) do
+			s.Transparency = (i == cfg.theme) and 0 or 1
+		end
 	end)
-	tabs[name] = tab
+
+	local r2 = row(portalPage, 36, true)
+	local test = button(r2, "TEST PORTAL (in front of you)")
+	test.Size = UDim2.new(1, 0, 1, 0)
+	test.Activated:Connect(function()
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if root then
+			local look = root.CFrame.LookVector
+			local flat = Vector3.new(look.X, 0, look.Z)
+			flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
+			makePortal(root.Position + flat * math.max(8, cfg.portalSize / 2 + 4) + Vector3.new(0, cfg.portalSize / 2 - 3, 0), flat)
+		end
+	end)
 end
 
--- small status line under the list (cooldown / errors)
-statusLabel = Instance.new("TextLabel")
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = ""
-statusLabel.Size = UDim2.new(0, 290, 0, 22)
-statusLabel.Position = UDim2.new(1, -290, 0, 356)
-statusLabel.Parent = root
-styleText(statusLabel, 18)
+---------------------------------------------------------------- GUN tab
+local gunPage = makePage("GUN")
+do
+	section(gunPage, "GUN")
+	slider(gunPage, "Cooldown", "cooldown", 0, 5, 0.1, "%.1f s")
+	slider(gunPage, "Max teleport distance", "maxDistance", 100, 100000, 100, "%d studs")
+	slider(gunPage, "Aim range", "aimRange", 100, 5000, 50, "%d studs")
+	toggle(gunPage, "Click with the gun to teleport", "clickTeleport")
+	toggle(gunPage, "Show \"Select a dimension\" panel", "showDimensions", refreshDimGui)
 
-fillList()
+	section(gunPage, "OTHER")
+	local r = row(gunPage, 36, true)
+	local give = button(r, "GIVE GUN AGAIN")
+	give.Size = UDim2.new(0.5, -4, 1, 0)
+	give.Activated:Connect(function()
+		giveGun()
+		setStatus("Gun is in your backpack")
+	end)
+	local reset = button(r, "RESET SETTINGS", rgb(90, 30, 30))
+	reset.Position = UDim2.new(0.5, 4, 0, 0)
+	reset.Size = UDim2.new(0.5, -4, 1, 0)
+	reset.Activated:Connect(function()
+		resetCfg(true)
+		saveCfg()
+		refreshAll()
+		setStatus("Settings reset (saved places kept)")
+	end)
+
+	local note = row(gunPage, 40, true)
+	local n = label(note, canSave and "Settings are saved to " .. SAVE_FILE or "Settings reset when you leave (no writefile)", 12, SUB)
+	n.Size = UDim2.new(1, 0, 1, 0)
+	n.TextWrapped = true
+end
+
+showPage("TELEPORT")
+refreshAll()
 
 --==============================================================
 --  give the gun (again after every respawn)
 --==============================================================
-local function giveGun()
+giveGun = function()
 	local backpack = player:WaitForChild("Backpack")
 	if currentTool and currentTool.Parent then
 		currentTool:Destroy()
 	end
+	for _, old in ipairs({ backpack:FindFirstChild(TOOL_NAME), player.Character and player.Character:FindFirstChild(TOOL_NAME) }) do
+		if old then old:Destroy() end
+	end
 	equipped = false
 	busy = false
-	gui.Enabled = false
+	refreshDimGui()
 
 	local tool, data = buildTool()
 	currentTool, gun = tool, data
 
 	tool.Equipped:Connect(function()
 		equipped = true
-		gui.Enabled = true
+		refreshDimGui()
 	end)
 	tool.Unequipped:Connect(function()
 		equipped = false
-		gui.Enabled = false
+		refreshDimGui()
 	end)
 	tool.Activated:Connect(function()
-		teleport(aimPosition())
+		if cfg.clickTeleport then
+			teleport(aimPosition(), true, false)
+		end
 	end)
 
 	tool.Parent = backpack
 end
 
-player.CharacterAdded:Connect(function()
+track(player.CharacterAdded:Connect(function()
 	task.wait(0.2) -- let the new Backpack appear
 	giveGun()
-end)
+end))
 if player.Character then
 	giveGun()
+end
+
+_G.PortalGunCleanup = function()
+	for _, c in ipairs(connections) do
+		c:Disconnect()
+	end
+	if dimGui then dimGui:Destroy() end
+	if adminGui then adminGui:Destroy() end
+	if currentTool then currentTool:Destroy() end
 end
