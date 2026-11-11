@@ -159,6 +159,36 @@ local function buildTool()
 	})
 	sparks.Parent = mist
 
+	-- green energy orb on the back of the gun: glass shell, glowing core, two spinning rings
+	local ORB_CENTER = CFrame.new(0, 0.42, 0.95)
+	local shell = fixed("OrbShell", Vector3.new(0.5, 0.5, 0.5), ORB_CENTER, GREEN, Enum.Material.ForceField, Enum.PartType.Ball)
+	shell.CastShadow = false
+	fixed("OrbMount", Vector3.new(0.3, 0.14, 0.3), CFrame.new(0, 0.22, 0.95), Color3.fromRGB(165, 170, 180))
+	local orbCore = part("OrbCore", Vector3.new(0.26, 0.26, 0.26), ORB_CENTER, GREEN_HOT, Enum.Material.Neon, Enum.PartType.Ball)
+	orbCore.CastShadow = false
+	local coreWeld = Instance.new("Weld")
+	coreWeld.Part0 = handle
+	coreWeld.Part1 = orbCore
+	coreWeld.C0 = ORB_CENTER
+	coreWeld.Parent = orbCore
+	local orbLight = Instance.new("PointLight")
+	orbLight.Color = GREEN
+	orbLight.Range = 7
+	orbLight.Brightness = 2
+	orbLight.Parent = orbCore
+	local orbRings = {}
+	for i = 1, 2 do
+		local ring = part("OrbRing" .. i, Vector3.new(0.03, 0.42, 0.42), ORB_CENTER, GREEN, Enum.Material.Neon, Enum.PartType.Cylinder)
+		ring.Transparency = 0.3
+		ring.CastShadow = false
+		local w = Instance.new("Weld")
+		w.Part0 = handle
+		w.Part1 = ring
+		w.C0 = ORB_CENTER
+		w.Parent = ring
+		orbRings[i] = w
+	end
+
 	-- plasma blobs, each on its own Weld so we can move it every frame
 	local blobs = {}
 	for i = 1, PLASMA_COUNT do
@@ -185,6 +215,15 @@ local function buildTool()
 	return tool, {
 		blobs = blobs,
 		tubeLight = tubeLight,
+		handle = handle,
+		orbCenter = ORB_CENTER,
+		coreWeld = coreWeld,
+		orbCore = orbCore,
+		orbLight = orbLight,
+		orbRings = orbRings,
+		slosh = Vector3.zero,
+		lastPos = nil,
+		lastVel = Vector3.zero,
 		muzzle = muzzle,
 		glow = glow,
 		sound = sound,
@@ -193,65 +232,113 @@ local function buildTool()
 end
 
 --==============================================================
---  portal effect (only you see it)
+--  portal effect: a swirling green vortex orb (only you see it)
 --==============================================================
-local function makePortal(position, facing)
-	local cf = CFrame.lookAt(position, position + facing) * ALONG_Z
-	local openInfo = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	local closeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+local ARMS = 5             -- spiral arms
+local ARM_SEGMENTS = 9     -- pieces per arm
 
+local function makePortal(position, facing)
+	local base = CFrame.lookAt(position, position + facing)   -- -Z = facing
 	local model = Instance.new("Model")
 	model.Name = "Portal"
 
-	local function disc(name, color, scale, thickness)
+	local function piece(shape, color, material, transparency)
 		local p = Instance.new("Part")
-		p.Name = name
-		p.Shape = Enum.PartType.Cylinder
-		p.Material = Enum.Material.Neon
+		p.Shape = shape
+		p.Material = material or Enum.Material.Neon
 		p.Color = color
+		p.Transparency = transparency or 0
 		p.Anchored = true
 		p.CanCollide = false
 		p.CanQuery = false
 		p.CanTouch = false
 		p.CastShadow = false
-		p.Size = Vector3.new(thickness, 0.1, 0.1)
-		p.CFrame = cf
+		p.Size = Vector3.new(0.1, 0.1, 0.1)
+		p.CFrame = base
 		p.Parent = model
-		TweenService:Create(p, openInfo, { Size = Vector3.new(thickness, PORTAL_SIZE * scale, PORTAL_SIZE * scale) }):Play()
-		task.delay(PORTAL_LIFETIME - 0.3, function()
-			if p.Parent then
-				TweenService:Create(p, closeInfo, { Size = Vector3.new(thickness, 0.1, 0.1) }):Play()
-			end
-		end)
 		return p
 	end
 
-	local outer = disc("Outer", GREEN, 1, 0.25)
-	disc("Core", GREEN_DEEP, 0.72, 0.3)
+	-- layered discs (cylinders lie along X, so turn them to face forward)
+	local FACE = CFrame.Angles(0, math.rad(90), 0)
+	local layers = {
+		{ part = piece(Enum.PartType.Cylinder, GREEN, Enum.Material.ForceField), scale = 1.15, thick = 0.2 },
+		{ part = piece(Enum.PartType.Cylinder, GREEN), scale = 1.0, thick = 0.25 },
+		{ part = piece(Enum.PartType.Cylinder, Color3.fromRGB(40, 200, 80)), scale = 0.8, thick = 0.3 },
+		{ part = piece(Enum.PartType.Cylinder, GREEN_DEEP), scale = 0.45, thick = 0.35 },
+		{ part = piece(Enum.PartType.Cylinder, GREEN_HOT), scale = 0.14, thick = 0.4 },
+	}
+
+	-- spiral arms: small glowing balls laid out on a spiral, spun every frame
+	local arms = {}
+	for a = 1, ARMS do
+		for s = 1, ARM_SEGMENTS do
+			local f = s / ARM_SEGMENTS
+			local ball = piece(Enum.PartType.Ball, (s % 2 == 0) and GREEN_HOT or GREEN)
+			ball.Transparency = 0.15 + f * 0.4
+			table.insert(arms, { part = ball, arm = a, f = f })
+		end
+	end
 
 	local light = Instance.new("PointLight")
 	light.Color = GREEN
-	light.Range = 18
-	light.Brightness = 2
-	light.Parent = outer
+	light.Range = 22
+	light.Brightness = 3
+	light.Parent = layers[2].part
 
+	-- sparks pulled in toward the middle
+	local emitterHolder = layers[1].part
 	local sparks = Instance.new("ParticleEmitter")
 	sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	sparks.Color = ColorSequence.new(GREEN)
+	sparks.Color = ColorSequence.new(GREEN_HOT, GREEN)
 	sparks.LightEmission = 1
-	sparks.Rate = 60
-	sparks.Lifetime = NumberRange.new(0.4, 0.9)
-	sparks.Speed = NumberRange.new(2, 6)
-	sparks.SpreadAngle = Vector2.new(180, 180)
-	sparks.RotSpeed = NumberRange.new(-180, 180)
+	sparks.Rate = 90
+	sparks.Lifetime = NumberRange.new(0.5, 1)
+	sparks.Speed = NumberRange.new(-6, -3)        -- negative = inward
+	sparks.Shape = Enum.ParticleEmitterShape.Disc
+	sparks.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+	sparks.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+	sparks.RotSpeed = NumberRange.new(-200, 200)
 	sparks.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.9),
+		NumberSequenceKeypoint.new(0, 0.7),
 		NumberSequenceKeypoint.new(1, 0),
 	})
-	sparks.Parent = outer
+	sparks.Parent = emitterHolder
 
 	model.Parent = Workspace
-	Debris:AddItem(model, PORTAL_LIFETIME)
+
+	local born = os.clock()
+	local conn
+	conn = RunService.RenderStepped:Connect(function()
+		local age = os.clock() - born
+		if age >= PORTAL_LIFETIME or not model.Parent then
+			conn:Disconnect()
+			model:Destroy()
+			return
+		end
+		-- open with a bounce, close with a quick shrink
+		local open = math.clamp(age / 0.35, 0, 1)
+		open = 1 + 2.2 * (open - 1) ^ 3 + 1.2 * (open - 1) ^ 2   -- "back" ease
+		local close = math.clamp((PORTAL_LIFETIME - age) / 0.3, 0, 1)
+		local k = math.max(open * close, 0.01)
+		local r = PORTAL_SIZE / 2 * k
+		local spin = age * 4
+
+		for i, layer in ipairs(layers) do
+			local d = PORTAL_SIZE * layer.scale * k * (1 + 0.03 * math.sin(age * 9 + i))
+			layer.part.Size = Vector3.new(layer.thick, d, d)
+			layer.part.CFrame = base * CFrame.new(0, 0, -0.05 * i) * CFrame.Angles(0, 0, spin * (i % 2 == 0 and 1 or -1)) * FACE
+		end
+		for _, seg in ipairs(arms) do
+			local angle = spin * 1.6 + seg.arm * (2 * math.pi / ARMS) + seg.f * 4.5
+			local dist = r * 0.95 * seg.f
+			local size = (0.25 + 0.55 * seg.f) * k
+			seg.part.Size = Vector3.new(size, size, size)
+			seg.part.CFrame = base * CFrame.new(math.cos(angle) * dist, math.sin(angle) * dist, -0.4)
+		end
+		light.Brightness = 3 + math.sin(age * 12)
+		sparks.Enabled = close > 0.5
+	end)
 end
 
 --==============================================================
@@ -297,21 +384,51 @@ end
 --==============================================================
 --  moving plasma
 --==============================================================
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(dt)
 	if not (gun and currentTool and currentTool.Parent) then return end
 	local t = os.clock()
 	local surge = math.clamp(1 - (t - gun.shotAt) / 0.7, 0, 1)
+	dt = math.max(dt, 1 / 240)
+
+	-- real sloshing: the liquid lags behind when the gun moves and sinks toward "down"
+	local hcf = gun.handle.CFrame
+	local pos = hcf.Position
+	local vel = gun.lastPos and (pos - gun.lastPos) / dt or Vector3.zero
+	local accel = (vel - gun.lastVel) / dt
+	gun.lastPos, gun.lastVel = pos, vel
+	local localAccel = hcf:VectorToObjectSpace(accel)
+	local localDown = hcf:VectorToObjectSpace(Vector3.new(0, -1, 0))
+	local target = localDown * 0.07 - localAccel * 0.0025
+	if target.Magnitude > 0.16 then
+		target = target.Unit * 0.16
+	end
+	gun.slosh = gun.slosh:Lerp(target, math.clamp(dt * 9, 0, 1))
+	local sx, sy = gun.slosh.X, gun.slosh.Y
+	local sz = math.clamp(gun.slosh.Z * 3, -TUBE_HALF, TUBE_HALF)
+	local wobble = 0.04 * math.clamp(localAccel.Magnitude / 60, 0, 1)
 
 	for _, blob in ipairs(gun.blobs) do
 		local i = blob.index
-		local along = math.sin(t * (1.3 + i * 0.45) + i * 1.7) * TUBE_HALF
+		local along = math.sin(t * (1.3 + i * 0.45) + i * 1.7) * TUBE_HALF * 0.6 + sz
+		along = math.clamp(along, -TUBE_HALF, TUBE_HALF)
 		local angle = t * (2.2 + i * 0.6) + i
-		local radius = 0.05 + 0.03 * math.sin(t * 3 + i) + 0.05 * surge
-		blob.weld.C0 = TUBE_CENTER * CFrame.new(math.cos(angle) * radius, math.sin(angle) * radius, along)
+		local radius = 0.04 + 0.02 * math.sin(t * 3 + i) + 0.05 * surge + wobble
+		local x = math.clamp(math.cos(angle) * radius + sx, -0.13, 0.13)
+		local y = math.clamp(math.sin(angle) * radius + sy, -0.13, 0.13)
+		blob.weld.C0 = TUBE_CENTER * CFrame.new(x, y, along)
 		local s = blob.baseSize * (1 + 0.25 * math.sin(t * 5 + i * 2) + 0.6 * surge)
 		blob.part.Size = Vector3.new(s, s, s)
 	end
 	gun.tubeLight.Brightness = 1.5 + 0.5 * math.sin(t * 7) + 4 * surge
+
+	-- orb: core pulses and drifts, rings spin faster after a shot
+	local spin = t * (2 + 10 * surge)
+	local c = 0.24 * (1 + 0.15 * math.sin(t * 4) + 0.5 * surge)
+	gun.orbCore.Size = Vector3.new(c, c, c)
+	gun.coreWeld.C0 = gun.orbCenter * CFrame.new(sx * 0.3, sy * 0.3, 0)
+	gun.orbLight.Brightness = 2 + math.sin(t * 4) + 6 * surge
+	gun.orbRings[1].C0 = gun.orbCenter * CFrame.Angles(spin, spin * 0.7, 0)
+	gun.orbRings[2].C0 = gun.orbCenter * CFrame.Angles(0, -spin * 1.3, spin)
 end)
 
 --==============================================================
