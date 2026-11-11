@@ -383,8 +383,28 @@ local function aimPosition()
 end
 
 --==============================================================
---  panel
+--  panel: "SELECT A DIMENSION"
 --==============================================================
+-- Edit these lists: each dimension is a name + the spot to teleport to.
+local DIMENSIONS = {
+	NEW = {
+		{ name = "BASEPLATE",    pos = Vector3.new(0, 5, 0) },
+		{ name = "INFERNO",      pos = Vector3.new(500, 5, 0) },
+		{ name = "FROZENSPIKES", pos = Vector3.new(-500, 5, 0) },
+		{ name = "VOIDISLANDS",  pos = Vector3.new(0, 5, 500) },
+	},
+	OG = {
+		{ name = "BASEPLATE",    pos = Vector3.new(0, 5, 0) },
+	},
+}
+
+local TEXT_COLOR = Color3.fromRGB(70, 255, 200)   -- cyan-green letters
+local TEXT_STROKE = Color3.fromRGB(10, 60, 50)
+local BTN_LIGHT = Color3.fromRGB(200, 205, 210)
+local BTN_DARK = Color3.fromRGB(70, 74, 80)
+local BORDER = Color3.fromRGB(30, 32, 36)
+local FONT = Enum.Font.LuckiestGuy
+
 local gui = Instance.new("ScreenGui")
 gui.Name = "PortalGunPanel"
 gui.ResetOnSpawn = false
@@ -397,183 +417,130 @@ local function corner(parent, radius)
 	c.Parent = parent
 end
 
-local function label(parent, text, size)
-	local l = Instance.new("TextLabel")
-	l.BackgroundTransparency = 1
-	l.Font = Enum.Font.GothamBold
-	l.TextSize = size or 14
-	l.TextColor3 = GREEN
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.Text = text
-	l.Size = UDim2.new(1, 0, 0, 20)
-	l.Parent = parent
-	return l
+local function outline(parent, thickness)
+	local s = Instance.new("UIStroke")
+	s.Color = BORDER
+	s.Thickness = thickness or 2
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = parent
 end
 
-local function button(parent, text)
+local function styleText(obj, size)
+	obj.Font = FONT
+	obj.TextColor3 = TEXT_COLOR
+	obj.TextStrokeColor3 = TEXT_STROKE
+	obj.TextStrokeTransparency = 0
+	obj.TextScaled = true
+	local limit = Instance.new("UITextSizeConstraint")
+	limit.MaxTextSize = size
+	limit.Parent = obj
+end
+
+local function bigButton(parent, text, size, color)
 	local b = Instance.new("TextButton")
-	b.BackgroundColor3 = GREEN
-	b.TextColor3 = DARK
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 14
+	b.AutoButtonColor = true
+	b.BackgroundColor3 = color or BTN_DARK
 	b.Text = text
-	b.Size = UDim2.new(1, 0, 0, 30)
 	b.Parent = parent
-	corner(b, 6)
+	styleText(b, size)
+	corner(b, 8)
+	outline(b, 2)
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 6)
+	pad.PaddingRight = UDim.new(0, 6)
+	pad.PaddingTop = UDim.new(0, 2)
+	pad.PaddingBottom = UDim.new(0, 2)
+	pad.Parent = b
 	return b
 end
 
-local function textBox(parent, placeholder)
-	local t = Instance.new("TextBox")
-	t.BackgroundColor3 = MID
-	t.TextColor3 = Color3.new(1, 1, 1)
-	t.PlaceholderColor3 = Color3.fromRGB(120, 130, 135)
-	t.PlaceholderText = placeholder
-	t.Text = ""
-	t.ClearTextOnFocus = false
-	t.Font = Enum.Font.Gotham
-	t.TextSize = 14
-	t.Size = UDim2.new(1, 0, 0, 30)
-	t.Parent = parent
-	corner(t, 6)
-	return t
-end
+-- whole panel sits on the right side
+local root = Instance.new("Frame")
+root.Name = "Root"
+root.BackgroundTransparency = 1
+root.AnchorPoint = Vector2.new(1, 0.5)
+root.Position = UDim2.new(1, -12, 0.5, 0)
+root.Size = UDim2.new(0, 440, 0, 380)
+root.Parent = gui
 
-local panel = Instance.new("Frame")
-panel.Name = "Panel"
-panel.Active = true      -- clicks on the panel do not fire the gun
-panel.AnchorPoint = Vector2.new(1, 0.5)
-panel.Position = UDim2.new(1, -16, 0.5, 0)
-panel.Size = UDim2.new(0, 250, 0, 400)
-panel.BackgroundColor3 = DARK
-panel.BackgroundTransparency = 0.08
-panel.Parent = gui
-corner(panel, 12)
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Text = "SELECT A DIMENSION"
+title.Size = UDim2.new(0, 300, 0, 40)
+title.Position = UDim2.new(1, -300, 0, 0)
+title.Parent = root
+styleText(title, 32)
 
-local stroke = Instance.new("UIStroke")
-stroke.Color = GREEN
-stroke.Thickness = 2
-stroke.Parent = panel
-
-local padding = Instance.new("UIPadding")
-padding.PaddingTop = UDim.new(0, 12)
-padding.PaddingBottom = UDim.new(0, 12)
-padding.PaddingLeft = UDim.new(0, 12)
-padding.PaddingRight = UDim.new(0, 12)
-padding.Parent = panel
-
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 8)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = panel
-
-label(panel, "PORTAL GUN", 18).LayoutOrder = 1
-
-label(panel, "Coordinates").LayoutOrder = 2
-local coordRow = Instance.new("Frame")
-coordRow.BackgroundTransparency = 1
-coordRow.Size = UDim2.new(1, 0, 0, 30)
-coordRow.LayoutOrder = 3
-coordRow.Parent = panel
-local rowLayout = Instance.new("UIListLayout")
-rowLayout.FillDirection = Enum.FillDirection.Horizontal
-rowLayout.Padding = UDim.new(0, 6)
-rowLayout.Parent = coordRow
-
-local boxes = {}
-for i, axis in ipairs({ "X", "Y", "Z" }) do
-	local b = textBox(coordRow, axis)
-	b.Size = UDim2.new(1 / 3, -4, 1, 0)
-	boxes[i] = b
-end
-
-local goButton = button(panel, "Open portal to coordinates")
-goButton.LayoutOrder = 4
-goButton.Activated:Connect(function()
-	local x, y, z = tonumber(boxes[1].Text), tonumber(boxes[2].Text), tonumber(boxes[3].Text)
-	if x and y and z then
-		task.spawn(teleport, Vector3.new(x, y, z))
-	else
-		setStatus("Enter three numbers")
-	end
-end)
-
-label(panel, "Saved locations").LayoutOrder = 5
-local nameBox = textBox(panel, "Name (e.g. Base)")
-nameBox.LayoutOrder = 6
-local saveButton = button(panel, "Save where I stand")
-saveButton.LayoutOrder = 7
-
+-- dimension list
 local list = Instance.new("ScrollingFrame")
-list.LayoutOrder = 8
-list.Size = UDim2.new(1, 0, 0, 120)
-list.BackgroundColor3 = MID
-list.BorderSizePixel = 0
-list.ScrollBarThickness = 4
-list.ScrollBarImageColor3 = GREEN
+list.Name = "List"
+list.Active = true
+list.Position = UDim2.new(1, -290, 0, 50)
+list.Size = UDim2.new(0, 290, 0, 300)
+list.BackgroundColor3 = Color3.fromRGB(45, 48, 54)
+list.BackgroundTransparency = 0.35
+list.ScrollBarThickness = 6
+list.ScrollBarImageColor3 = BTN_LIGHT
 list.AutomaticCanvasSize = Enum.AutomaticSize.Y
 list.CanvasSize = UDim2.new(0, 0, 0, 0)
-list.Parent = panel
-corner(list, 6)
+list.Parent = root
+corner(list, 10)
+outline(list, 2)
 local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 4)
+listLayout.Padding = UDim.new(0, 6)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent = list
 local listPad = Instance.new("UIPadding")
-listPad.PaddingTop = UDim.new(0, 4)
-listPad.PaddingLeft = UDim.new(0, 4)
-listPad.PaddingRight = UDim.new(0, 8)
+listPad.PaddingTop = UDim.new(0, 6)
+listPad.PaddingBottom = UDim.new(0, 6)
+listPad.PaddingLeft = UDim.new(0, 6)
+listPad.PaddingRight = UDim.new(0, 14)
 listPad.Parent = list
 
-statusLabel = label(panel, "Click anywhere to shoot", 12)
-statusLabel.LayoutOrder = 9
-statusLabel.TextColor3 = Color3.fromRGB(170, 180, 185)
+-- NEW / OG tabs on the left of the list
+local tabs = {}
+local currentTab = "NEW"
 
-local function refreshList()
+local function fillList()
 	for _, child in ipairs(list:GetChildren()) do
-		if child:IsA("Frame") then
+		if child:IsA("TextButton") then
 			child:Destroy()
 		end
 	end
-	for index, entry in ipairs(saved) do
-		local row = Instance.new("Frame")
-		row.BackgroundTransparency = 1
-		row.Size = UDim2.new(1, 0, 0, 26)
-		row.Parent = list
-
-		local go = button(row, entry.name)
-		go.Size = UDim2.new(1, -30, 1, 0)
-		go.BackgroundColor3 = DARK
-		go.TextColor3 = GREEN
-		go.TextTruncate = Enum.TextTruncate.AtEnd
-		go.Activated:Connect(function()
-			task.spawn(teleport, entry.pos)
+	for i, dim in ipairs(DIMENSIONS[currentTab] or {}) do
+		local b = bigButton(list, dim.name, 36, (i % 2 == 0) and BTN_LIGHT or BTN_DARK)
+		b.Size = UDim2.new(1, 0, 0, 58)
+		b.LayoutOrder = i
+		b.Activated:Connect(function()
+			task.spawn(teleport, dim.pos)
 		end)
-
-		local del = button(row, "X")
-		del.Size = UDim2.new(0, 26, 1, 0)
-		del.Position = UDim2.new(1, -26, 0, 0)
-		del.BackgroundColor3 = Color3.fromRGB(200, 70, 70)
-		del.TextColor3 = Color3.new(1, 1, 1)
-		del.Activated:Connect(function()
-			table.remove(saved, index)
-			refreshList()
-		end)
+	end
+	for name, tab in pairs(tabs) do
+		tab.BackgroundColor3 = (name == currentTab) and BTN_DARK or BTN_LIGHT
 	end
 end
 
-saveButton.Activated:Connect(function()
-	local char = player.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	local name = nameBox.Text
-	if name == "" then
-		name = "Location " .. (#saved + 1)
-	end
-	table.insert(saved, { name = name, pos = root.Position - Vector3.new(0, 3, 0) })
-	nameBox.Text = ""
-	refreshList()
-	setStatus("Saved " .. name)
-end)
+for i, name in ipairs({ "NEW", "OG" }) do
+	local tab = bigButton(root, name, 34)
+	tab.Size = UDim2.new(0, 120, 0, 60)
+	tab.Position = UDim2.new(1, -420, 0, 150 + (i - 1) * 72)
+	tab.Activated:Connect(function()
+		currentTab = name
+		fillList()
+	end)
+	tabs[name] = tab
+end
+
+-- small status line under the list (cooldown / errors)
+statusLabel = Instance.new("TextLabel")
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = ""
+statusLabel.Size = UDim2.new(0, 290, 0, 22)
+statusLabel.Position = UDim2.new(1, -290, 0, 356)
+statusLabel.Parent = root
+styleText(statusLabel, 18)
+
+fillList()
 
 --==============================================================
 --  give the gun (again after every respawn)
