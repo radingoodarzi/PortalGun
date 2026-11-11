@@ -22,17 +22,17 @@ local TRAVEL_DELAY = 0.45       -- time between portal opening and the jump
 local PORTAL_LIFETIME = 2.5
 local SHOT_SOUND_ID = ""        -- optional, e.g. "rbxassetid://123456"
 
-local GREEN = Color3.fromRGB(80, 255, 120)
-local GREEN_DEEP = Color3.fromRGB(15, 70, 35)
-local GREEN_HOT = Color3.fromRGB(200, 255, 210)
+local GREEN = Color3.fromRGB(0, 255, 42)        -- vivid portal green
+local GREEN_DEEP = Color3.fromRGB(0, 110, 25)
+local GREEN_HOT = Color3.fromRGB(200, 255, 90)  -- lime-yellow core
 local DARK = Color3.fromRGB(18, 22, 26)
 local MID = Color3.fromRGB(34, 40, 46)
 
 -- plasma tube (position is relative to the gun's Handle; gun points toward -Z)
 local PLASMA_COUNT = 6
-local TUBE_CENTER = CFrame.new(0, 0.47, 0.15)
-local TUBE_LENGTH = 1.0
-local TUBE_DIAMETER = 0.44
+local TUBE_CENTER = CFrame.new(0, 0.46, -0.15)
+local TUBE_LENGTH = 0.9
+local TUBE_DIAMETER = 0.42
 local TUBE_HALF = TUBE_LENGTH / 2 - 0.14
 
 local ALONG_Z = CFrame.Angles(0, math.rad(90), 0) -- turns a cylinder so it lies along the barrel
@@ -51,15 +51,17 @@ local function buildTool()
 	tool.CanBeDropped = false
 	tool.Grip = BASE_GRIP
 
-	local graphite = Color3.fromRGB(42, 45, 54)
-	local black = Color3.fromRGB(22, 23, 28)
-	local steel = Color3.fromRGB(165, 170, 180)
+	-- sci-fi "portal gun" look: white body, glass bulb on top, three green emitters up front
+	local white = Color3.fromRGB(231, 231, 236)
+	local grey = Color3.fromRGB(170, 172, 180)
+	local black = Color3.fromRGB(17, 17, 17)
+	local red = Color3.fromRGB(117, 0, 0)
 
 	local handle = Instance.new("Part")
 	handle.Name = "Handle"
-	handle.Size = Vector3.new(0.5, 0.5, 1.8)
-	handle.Color = graphite
-	handle.Material = Enum.Material.Metal
+	handle.Size = Vector3.new(0.55, 0.5, 1.3)
+	handle.Color = white
+	handle.Material = Enum.Material.SmoothPlastic
 	handle.CanCollide = false
 	handle.Massless = true
 	handle.Parent = tool
@@ -69,7 +71,7 @@ local function buildTool()
 		p.Name = name
 		p.Size = size
 		p.Color = color
-		p.Material = material or Enum.Material.Metal
+		p.Material = material or Enum.Material.SmoothPlastic
 		if shape then
 			p.Shape = shape
 		end
@@ -91,31 +93,28 @@ local function buildTool()
 		return p
 	end
 
-	-- grip, trigger guard, stock
-	fixed("Grip", Vector3.new(0.36, 0.85, 0.42), CFrame.new(0, -0.6, 0.5) * CFrame.Angles(math.rad(-16), 0, 0), black)
-	fixed("GuardBottom", Vector3.new(0.12, 0.08, 0.5), CFrame.new(0, -0.62, 0.02), steel)
-	fixed("GuardFront", Vector3.new(0.12, 0.4, 0.08), CFrame.new(0, -0.44, -0.2), steel)
-	fixed("Trigger", Vector3.new(0.08, 0.22, 0.08), CFrame.new(0, -0.36, 0.12) * CFrame.Angles(math.rad(20), 0, 0), GREEN, Enum.Material.Neon)
-	fixed("Stock", Vector3.new(0.42, 0.42, 0.3), CFrame.new(0, 0.02, 1.0) * CFrame.Angles(math.rad(12), 0, 0), black)
+	local CYL = Enum.PartType.Cylinder
+	local UPRIGHT = CFrame.Angles(0, 0, math.rad(90)) -- turns a cylinder to stand up
 
-	-- side armour plates and vents
-	for _, side in ipairs({ -1, 1 }) do
-		fixed("Plate", Vector3.new(0.06, 0.34, 1.2), CFrame.new(0.27 * side, -0.02, 0.05), black)
-		for i = 0, 2 do
-			fixed("Vent", Vector3.new(0.04, 0.2, 0.08),
-				CFrame.new(0.3 * side, -0.02, -0.25 + i * 0.22) * CFrame.Angles(math.rad(25), 0, 0),
-				GREEN, Enum.Material.Neon)
-		end
-	end
+	-- rounded back drum + dark rear disc
+	fixed("RearDrum", Vector3.new(0.4, 0.62, 0.62), CFrame.new(0, 0, 0.62) * ALONG_Z, white, nil, CYL)
+	fixed("RearDisc", Vector3.new(0.04, 0.42, 0.42), CFrame.new(0, 0, 0.83) * ALONG_Z, black, nil, CYL)
 
-	-- barrel with three shrinking emitter rings
-	fixed("Barrel", Vector3.new(0.7, 0.34, 0.34), CFrame.new(0, 0, -1.2) * ALONG_Z, steel, nil, Enum.PartType.Cylinder)
-	for i = 0, 2 do
-		local d = 0.74 - i * 0.13
-		fixed("Ring" .. i, Vector3.new(0.07, d, d), CFrame.new(0, 0, -1.05 - i * 0.2) * ALONG_Z, black, nil, Enum.PartType.Cylinder)
-		fixed("RingGlow" .. i, Vector3.new(0.03, d - 0.08, d - 0.08), CFrame.new(0, 0, -1.09 - i * 0.2) * ALONG_Z, GREEN, Enum.Material.Neon, Enum.PartType.Cylinder)
+	-- grip under the back
+	fixed("Grip", Vector3.new(0.32, 0.7, 0.36), CFrame.new(0, -0.55, 0.45) * CFrame.Angles(math.rad(-12), 0, 0), grey)
+	fixed("Trigger", Vector3.new(0.08, 0.2, 0.08), CFrame.new(0, -0.33, 0.12) * CFrame.Angles(math.rad(20), 0, 0), black)
+
+	-- black knob on top
+	fixed("Knob", Vector3.new(0.12, 0.18, 0.18), CFrame.new(0, 0.3, 0.45) * UPRIGHT, black, nil, CYL)
+
+	-- front: black plate with three green emitters stacked top to bottom
+	fixed("FrontPlate", Vector3.new(0.5, 0.66, 0.12), CFrame.new(0, 0, -0.7), black)
+	local emitters = {}
+	for i, y in ipairs({ 0.21, 0, -0.21 }) do
+		fixed("EmitterRing" .. i, Vector3.new(0.08, 0.2, 0.2), CFrame.new(0, y, -0.78) * ALONG_Z, grey, nil, CYL)
+		emitters[i] = fixed("Emitter" .. i, Vector3.new(0.1, 0.15, 0.15), CFrame.new(0, y, -0.84) * ALONG_Z, GREEN, Enum.Material.Neon, CYL)
 	end
-	local muzzle = fixed("Muzzle", Vector3.new(0.3, 0.3, 0.3), CFrame.new(0, 0, -1.62), GREEN, Enum.Material.Neon, Enum.PartType.Ball)
+	local muzzle = emitters[2]
 	local glow = Instance.new("PointLight")
 	glow.Name = "Glow"
 	glow.Color = GREEN
@@ -123,18 +122,50 @@ local function buildTool()
 	glow.Brightness = 1
 	glow.Parent = muzzle
 
-	-- plasma tube: clear cylinder on top, held by two steel caps and a cradle
-	fixed("Cradle", Vector3.new(0.3, 0.12, TUBE_LENGTH + 0.1), CFrame.new(0, 0.3, 0.15), black)
-	local tube = fixed("PlasmaTube", Vector3.new(TUBE_LENGTH, TUBE_DIAMETER, TUBE_DIAMETER), TUBE_CENTER * ALONG_Z, GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
-	tube.Transparency = 0.72
-	tube.CastShadow = false
-	for _, z in ipairs({ -1, 1 }) do
-		fixed("TubeCap", Vector3.new(0.1, TUBE_DIAMETER + 0.1, TUBE_DIAMETER + 0.1),
-			TUBE_CENTER * CFrame.new(0, 0, z * (TUBE_LENGTH / 2 + 0.04)) * ALONG_Z, steel, nil, Enum.PartType.Cylinder)
-	end
-	fixed("FeedPipe", Vector3.new(0.5, 0.1, 0.1), CFrame.new(0, 0.3, -0.62) * CFrame.Angles(math.rad(-40), 0, 0) * ALONG_Z, GREEN, Enum.Material.Neon, Enum.PartType.Cylinder)
+	-- tiny green twinkle in front of the emitters
+	local tip = fixed("Tip", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, -0.95), GREEN)
+	tip.Transparency = 1
+	local twinkle = Instance.new("ParticleEmitter")
+	twinkle.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	twinkle.Color = ColorSequence.new(GREEN)
+	twinkle.LightEmission = 1
+	twinkle.LockedToPart = true
+	twinkle.Rate = 60
+	twinkle.Lifetime = NumberRange.new(0.2)
+	twinkle.Speed = NumberRange.new(0)
+	twinkle.Size = NumberSequence.new(0.12)
+	twinkle.Parent = tip
 
-	-- soft glow and drifting sparks inside the tube
+	-- red side display (shows READY / cooldown)
+	local panel = fixed("Display", Vector3.new(0.04, 0.26, 0.52), CFrame.new(0.29, 0, 0.05), red)
+	local sg = Instance.new("SurfaceGui")
+	sg.Face = Enum.NormalId.Right
+	sg.LightInfluence = 0
+	sg.CanvasSize = Vector2.new(200, 100)
+	sg.Parent = panel
+	local display = Instance.new("TextLabel")
+	display.BackgroundTransparency = 1
+	display.Size = UDim2.fromScale(1, 1)
+	display.Font = Enum.Font.Arcade
+	display.TextScaled = true
+	display.TextColor3 = Color3.fromRGB(255, 120, 120)
+	display.Text = "READY"
+	display.Parent = sg
+
+	-- glass bulb on top: tube + rounded front end, held by grey caps
+	fixed("Cradle", Vector3.new(0.3, 0.1, TUBE_LENGTH), CFrame.new(0, 0.27, -0.15), grey)
+	local tube = fixed("PlasmaTube", Vector3.new(TUBE_LENGTH, TUBE_DIAMETER, TUBE_DIAMETER), TUBE_CENTER * ALONG_Z, GREEN, Enum.Material.SmoothPlastic, CYL)
+	tube.Transparency = 0.45
+	tube.CastShadow = false
+	local bulbEnd = fixed("BulbEnd", Vector3.new(TUBE_DIAMETER, TUBE_DIAMETER, TUBE_DIAMETER),
+		TUBE_CENTER * CFrame.new(0, 0, -TUBE_LENGTH / 2), GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+	bulbEnd.Transparency = 0.45
+	bulbEnd.CastShadow = false
+	fixed("TubeCap", Vector3.new(0.1, TUBE_DIAMETER + 0.08, TUBE_DIAMETER + 0.08),
+		TUBE_CENTER * CFrame.new(0, 0, TUBE_LENGTH / 2 + 0.04) * ALONG_Z, grey, nil, CYL)
+	fixed("FeedPipe", Vector3.new(0.4, 0.09, 0.09), CFrame.new(0, 0.32, -0.66) * CFrame.Angles(math.rad(60), 0, 0) * ALONG_Z, GREEN, Enum.Material.Neon, CYL)
+
+	-- soft glow and drifting sparks inside the bulb
 	local mist = fixed("PlasmaMist", Vector3.new(0.22, 0.22, TUBE_LENGTH - 0.2), TUBE_CENTER, GREEN)
 	mist.Transparency = 1
 	local tubeLight = Instance.new("PointLight")
@@ -158,36 +189,6 @@ local function buildTool()
 		NumberSequenceKeypoint.new(1, 0),
 	})
 	sparks.Parent = mist
-
-	-- green energy orb on the back of the gun: glass shell, glowing core, two spinning rings
-	local ORB_CENTER = CFrame.new(0, 0.42, 0.95)
-	local shell = fixed("OrbShell", Vector3.new(0.5, 0.5, 0.5), ORB_CENTER, GREEN, Enum.Material.ForceField, Enum.PartType.Ball)
-	shell.CastShadow = false
-	fixed("OrbMount", Vector3.new(0.3, 0.14, 0.3), CFrame.new(0, 0.22, 0.95), Color3.fromRGB(165, 170, 180))
-	local orbCore = part("OrbCore", Vector3.new(0.26, 0.26, 0.26), ORB_CENTER, GREEN_HOT, Enum.Material.Neon, Enum.PartType.Ball)
-	orbCore.CastShadow = false
-	local coreWeld = Instance.new("Weld")
-	coreWeld.Part0 = handle
-	coreWeld.Part1 = orbCore
-	coreWeld.C0 = ORB_CENTER
-	coreWeld.Parent = orbCore
-	local orbLight = Instance.new("PointLight")
-	orbLight.Color = GREEN
-	orbLight.Range = 7
-	orbLight.Brightness = 2
-	orbLight.Parent = orbCore
-	local orbRings = {}
-	for i = 1, 2 do
-		local ring = part("OrbRing" .. i, Vector3.new(0.03, 0.42, 0.42), ORB_CENTER, GREEN, Enum.Material.Neon, Enum.PartType.Cylinder)
-		ring.Transparency = 0.3
-		ring.CastShadow = false
-		local w = Instance.new("Weld")
-		w.Part0 = handle
-		w.Part1 = ring
-		w.C0 = ORB_CENTER
-		w.Parent = ring
-		orbRings[i] = w
-	end
 
 	-- plasma blobs, each on its own Weld so we can move it every frame
 	local blobs = {}
@@ -216,11 +217,7 @@ local function buildTool()
 		blobs = blobs,
 		tubeLight = tubeLight,
 		handle = handle,
-		orbCenter = ORB_CENTER,
-		coreWeld = coreWeld,
-		orbCore = orbCore,
-		orbLight = orbLight,
-		orbRings = orbRings,
+		display = display,
 		slosh = Vector3.zero,
 		lastPos = nil,
 		lastVel = Vector3.zero,
@@ -264,7 +261,7 @@ local function makePortal(position, facing)
 	local layers = {
 		{ part = piece(Enum.PartType.Cylinder, GREEN, Enum.Material.ForceField), scale = 1.15, thick = 0.2 },
 		{ part = piece(Enum.PartType.Cylinder, GREEN), scale = 1.0, thick = 0.25 },
-		{ part = piece(Enum.PartType.Cylinder, Color3.fromRGB(40, 200, 80)), scale = 0.8, thick = 0.3 },
+		{ part = piece(Enum.PartType.Cylinder, Color3.fromRGB(90, 235, 40)), scale = 0.8, thick = 0.3 },
 		{ part = piece(Enum.PartType.Cylinder, GREEN_DEEP), scale = 0.45, thick = 0.35 },
 		{ part = piece(Enum.PartType.Cylinder, GREEN_HOT), scale = 0.14, thick = 0.4 },
 	}
@@ -421,14 +418,9 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	gun.tubeLight.Brightness = 1.5 + 0.5 * math.sin(t * 7) + 4 * surge
 
-	-- orb: core pulses and drifts, rings spin faster after a shot
-	local spin = t * (2 + 10 * surge)
-	local c = 0.24 * (1 + 0.15 * math.sin(t * 4) + 0.5 * surge)
-	gun.orbCore.Size = Vector3.new(c, c, c)
-	gun.coreWeld.C0 = gun.orbCenter * CFrame.new(sx * 0.3, sy * 0.3, 0)
-	gun.orbLight.Brightness = 2 + math.sin(t * 4) + 6 * surge
-	gun.orbRings[1].C0 = gun.orbCenter * CFrame.Angles(spin, spin * 0.7, 0)
-	gun.orbRings[2].C0 = gun.orbCenter * CFrame.Angles(0, -spin * 1.3, spin)
+	-- side display: READY, or the seconds left while recharging
+	local left = COOLDOWN - (os.clock() - lastShot)
+	gun.display.Text = (left > 0) and string.format("%.1f", left) or "READY"
 end)
 
 --==============================================================
