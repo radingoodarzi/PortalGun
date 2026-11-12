@@ -46,8 +46,9 @@ local THEMES = {
 
 local DEFAULTS = {
 	cooldown = 1.5,          -- seconds between gun shots
-	maxDistance = 5000,      -- max teleport distance in studs
-	aimRange = 1000,         -- how far the gun can aim
+	maxDistance = 100000,    -- max teleport distance in studs (if the limit is on)
+	noDistanceLimit = true,  -- teleport any distance
+	aimRange = 5000,         -- how far the gun can aim
 	portalSize = 9,          -- portal diameter in studs
 	portalLifetime = 2.5,    -- seconds a portal stays open
 	travelDelay = 0.45,      -- auto-jump: wait this long before jumping in
@@ -423,7 +424,7 @@ local function makePortal(center, facing, bottom, lifetime)
 			local ang = spin + s.arm * (TAU / ARMS) + s.f * 3.2
 			local dist = r * (0.12 + 0.75 * s.f)
 			s.p.Size = Vector3.new(r * (0.18 + 0.3 * s.f), r * (0.05 + 0.05 * s.f), 0.05)
-			s.p.CFrame = base * CFrame.new(math.cos(ang) * dist, math.sin(ang) * dist, s.side * 0.21)
+			s.p.CFrame = base * CFrame.new(math.cos(ang) * dist, math.sin(ang) * dist, s.side * 0.24)
 				* CFrame.Angles(0, 0, ang + math.pi / 2 - 0.5)
 		end
 
@@ -565,6 +566,52 @@ end))
 local EXIT_OFFSET = 3.5      -- how far in front of the other portal you come out
 local travelLockUntil = 0
 
+local function rayParams()
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { player.Character }
+	return params
+end
+
+-- raycast of any length (Roblox limits one ray, so go in 5000-stud steps)
+local function longRaycast(origin, direction, length)
+	local params = rayParams()
+	local dir = direction.Unit
+	local done = 0
+	while done < length do
+		local step = math.min(5000, length - done)
+		local hit = Workspace:Raycast(origin + dir * done, dir * step, params)
+		if hit then
+			return hit
+		end
+		done += step
+	end
+	return nil
+end
+
+-- position of the floor under a point, or nil
+local function groundBelow(pos, depth)
+	local hit = longRaycast(pos, Vector3.new(0, -1, 0), depth)
+	return hit and hit.Position
+end
+
+-- far away the map may not be loaded yet: freeze in place until there is ground (max 4 s)
+local function holdUntilLoaded(pos)
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root or groundBelow(pos, 60) then return end
+	root.Anchored = true
+	setStatus("Loading the area...")
+	local t0 = os.clock()
+	while os.clock() - t0 < 4 and root.Parent and not groundBelow(pos, 60) do
+		task.wait(0.1)
+	end
+	if root.Parent then
+		root.Anchored = false
+	end
+	setStatus("")
+end
+
 -- side = +1 if you came from the portal's back (+Z) side, -1 from its front
 local function travel(from, side)
 	local to = from.partner
@@ -586,6 +633,7 @@ local function travel(from, side)
 	for _, p in ipairs(activePortals) do
 		p.prevZ = nil
 	end
+	task.spawn(holdUntilLoaded, pos)
 end
 
 -- every frame: did you just step through a portal's disc?
@@ -635,8 +683,8 @@ local function teleport(target, snap, fromPanel)
 	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not (humanoid and root) or humanoid.Health <= 0 then return end
-	if (target - root.Position).Magnitude > cfg.maxDistance then
-		setStatus("Too far (max " .. cfg.maxDistance .. ")")
+	if not cfg.noDistanceLimit and (target - root.Position).Magnitude > cfg.maxDistance then
+		setStatus("Too far (max " .. math.floor(cfg.maxDistance) .. ")")
 		return
 	end
 
@@ -648,11 +696,8 @@ local function teleport(target, snap, fromPanel)
 
 	local standAt
 	if snap then
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.FilterDescendantsInstances = { char }
-		local hit = Workspace:Raycast(target + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), params)
-		standAt = (hit and hit.Position or target) + Vector3.new(0, 3.5, 0)
+		local ground = groundBelow(target + Vector3.new(0, 5, 0), 3000)
+		standAt = (ground or target) + Vector3.new(0, 3.5, 0)
 	else
 		standAt = target
 	end
@@ -673,6 +718,7 @@ local function teleport(target, snap, fromPanel)
 		closeAllPortals()
 		char:PivotTo(CFrame.lookAt(standAt, standAt + flat))
 		root.AssemblyLinearVelocity = Vector3.zero
+		task.spawn(holdUntilLoaded, standAt)
 		busy = false
 		return
 	end
@@ -680,8 +726,16 @@ local function teleport(target, snap, fromPanel)
 	-- one pair at a time: the old pair closes
 	closeAllPortals()
 	local half = cfg.portalSize / 2
-	local feetHere = root.Position.Y - 3
-	local hereCenter = Vector3.new(root.Position.X, feetHere + half, root.Position.Z) + flat * math.max(6, half + 2)
+	-- real floor under you (not a guess), so the portal sits on the ground
+	local floorHere = groundBelow(root.Position, 12)
+	local feetHere = floorHere and floorHere.Y or (root.Position.Y - 3)
+	-- don't put the portal inside a wall in front of you
+	local dist = math.max(6, half + 2)
+	local wall = longRaycast(root.Position, flat, dist + 1)
+	if wall then
+		dist = math.max(2.5, wall.Distance - 1)
+	end
+	local hereCenter = Vector3.new(root.Position.X, feetHere + half, root.Position.Z) + flat * dist
 	local feetThere = standAt.Y - 3
 	-- the exit sits a few studs before the target, so walking out puts you right on it
 	local thereCenter = Vector3.new(standAt.X, feetThere + half, standAt.Z) - flat * EXIT_OFFSET
@@ -704,15 +758,13 @@ local function aimPosition()
 	local mouse = UserInputService:GetMouseLocation()
 	local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { player.Character }
-
-	local hit = Workspace:Raycast(ray.Origin, ray.Direction * cfg.aimRange, params)
+	local hit = longRaycast(ray.Origin, ray.Direction, cfg.aimRange)
 	if hit then
-		return hit.Position
+		-- step back off the surface so you don't land inside a wall
+		return hit.Position + hit.Normal * 1.5
 	end
-	return ray.Origin + ray.Direction * 150
+	-- aimed at the sky: go as far as the aim range allows
+	return ray.Origin + ray.Direction.Unit * cfg.aimRange
 end
 
 --==============================================================
@@ -1425,8 +1477,9 @@ local gunPage = makePage("GUN")
 do
 	section(gunPage, "GUN")
 	slider(gunPage, "Cooldown", "cooldown", 0, 5, 0.1, "%.1f s")
-	slider(gunPage, "Max teleport distance", "maxDistance", 100, 100000, 100, "%.0f studs")
-	slider(gunPage, "Aim range", "aimRange", 100, 5000, 50, "%.0f studs")
+	toggle(gunPage, "No distance limit", "noDistanceLimit")
+	slider(gunPage, "Max teleport distance (if limited)", "maxDistance", 100, 1000000, 100, "%.0f studs")
+	slider(gunPage, "Aim range", "aimRange", 100, 50000, 100, "%.0f studs")
 	toggle(gunPage, "Click with the gun to teleport", "clickTeleport")
 	toggle(gunPage, "Show \"Select a dimension\" panel", "showDimensions", refreshDimGui)
 
