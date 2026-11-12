@@ -110,8 +110,8 @@ local GREEN_HOT = rgb(200, 255, 90)
 local BASE_GRIP = CFrame.Angles(0, 0, math.rad(-90))
 local ORB_CENTER = CFrame.new(1.134, 0.016, -0.695)   -- the green ball on top
 local ORB_SIZE = 0.48
-local PLASMA_COUNT = 6
-local ARC_COUNT = 5          -- electric arcs inside the green orb
+local PLASMA_COUNT = 14
+local ARC_COUNT = 8         -- electric arcs inside the green orb
 local ARC_SEGMENTS = 5       -- zigzag pieces per arc
 
 local WHITE = rgb(231, 231, 236)
@@ -256,20 +256,13 @@ local function buildTool()
 	})
 	twinkle.Parent = orb
 
-	-- energy source: glowing core + two spinning rings + sloshing plasma blobs
+	-- energy source: glowing core + sloshing plasma blobs + electric arcs
 	local core, coreWeld = moving("EnergyCore", Vector3.new(0.14, 0.14, 0.14), GREEN_HOT, NEON, Enum.PartType.Ball)
 	local light = Instance.new("PointLight")
 	light.Color = GREEN
-	light.Range = 7
-	light.Brightness = 2
+	light.Range = 5
+	light.Brightness = 1
 	light.Parent = core
-
-	local rings = {}
-	for i = 1, 2 do
-		local ring, w = moving("EnergyRing" .. i, Vector3.new(0.02, 0.34, 0.34), GREEN, NEON, CYL)
-		ring.Transparency = 0.3
-		rings[i] = w
-	end
 
 	local blobs = {}
 	for i = 1, PLASMA_COUNT do
@@ -303,7 +296,6 @@ local function buildTool()
 		blobs = blobs,
 		core = core,
 		coreWeld = coreWeld,
-		rings = rings,
 		light = light,
 		display = display,
 		muzzle = muzzle,
@@ -566,13 +558,10 @@ track(RunService.RenderStepped:Connect(function(dt)
 		blob.part.Size = Vector3.new(s, s, s)
 	end
 
-	local spin = t * (2 + 10 * surge)
 	local c = 0.14 * (1 + 0.2 * math.sin(t * 4) + 0.6 * surge)
 	gun.core.Size = Vector3.new(c, c, c)
 	gun.coreWeld.C0 = ORB_CENTER * CFrame.new(gun.slosh * 0.3)
-	gun.light.Brightness = 2 + math.sin(t * 4) + 6 * surge
-	gun.rings[1].C0 = ORB_CENTER * CFrame.Angles(spin, spin * 0.7, 0)
-	gun.rings[2].C0 = ORB_CENTER * CFrame.Angles(0, -spin * 1.3, spin)
+	gun.light.Brightness = 1 + 0.4 * math.sin(t * 4) + 3 * surge
 
 	-- lightning: redraw the arcs in new random shapes many times a second
 	if t >= gun.nextArc then
@@ -613,7 +602,7 @@ track(RunService.RenderStepped:Connect(function(dt)
 				end
 			end
 		end
-		gun.light.Brightness += lit * 0.6 * math.random()
+		gun.light.Brightness += lit * 0.25 * math.random()
 	end
 
 	local left = cfg.cooldown - (t - lastShot)
