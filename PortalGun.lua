@@ -110,7 +110,6 @@ local GREEN_HOT = rgb(200, 255, 90)
 local BASE_GRIP = CFrame.Angles(0, 0, math.rad(-90))
 local ORB_CENTER = CFrame.new(1.134, 0.016, -0.695)   -- the green ball on top
 local ORB_SIZE = 0.48
-local PLASMA_COUNT = 14
 local ARC_COUNT = 8         -- electric arcs inside the green orb
 local ARC_SEGMENTS = 5       -- zigzag pieces per arc
 
@@ -237,41 +236,13 @@ local function buildTool()
 	local orb = fixed("EnergyBall", Vector3.new(ORB_SIZE, ORB_SIZE, ORB_SIZE), ORB_CENTER, GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Ball)
 	orb.Transparency = 0.5
 	orb.CastShadow = false
-	local orbGlow = fixed("EnergyGlow", Vector3.new(ORB_SIZE + 0.05, ORB_SIZE + 0.05, ORB_SIZE + 0.05), ORB_CENTER, GREEN, Enum.Material.ForceField, Enum.PartType.Ball)
-	orbGlow.CastShadow = false
-
-	-- twinkle inside the ball (same idea as the scanned model's particle part)
-	local twinkle = Instance.new("ParticleEmitter")
-	twinkle.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	twinkle.Color = ColorSequence.new(GREEN_HOT, GREEN)
-	twinkle.LightEmission = 1
-	twinkle.LockedToPart = true
-	twinkle.Rate = 40
-	twinkle.Lifetime = NumberRange.new(0.2, 0.5)
-	twinkle.Speed = NumberRange.new(0.1, 0.4)
-	twinkle.SpreadAngle = Vector2.new(180, 180)
-	twinkle.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.1),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	twinkle.Parent = orb
-
-	-- energy source: glowing core + sloshing plasma blobs + electric arcs
-	local core, coreWeld = moving("EnergyCore", Vector3.new(0.14, 0.14, 0.14), GREEN_HOT, NEON, Enum.PartType.Ball)
 	local light = Instance.new("PointLight")
 	light.Color = GREEN
 	light.Range = 5
 	light.Brightness = 1
-	light.Parent = core
+	light.Parent = orb
 
-	local blobs = {}
-	for i = 1, PLASMA_COUNT do
-		local size = 0.06 + (i % 3) * 0.02
-		local blob, w = moving("Plasma" .. i, Vector3.new(size, size, size), (i % 2 == 0) and GREEN_HOT or GREEN, NEON, Enum.PartType.Ball)
-		table.insert(blobs, { part = blob, weld = w, index = i, baseSize = size })
-	end
-
-	-- electric arcs: thin neon zigzags that jump from the core to the glass (and past it after a shot)
+	-- electric plasma: thin neon zigzags that jump from the centre to the glass (and past it after a shot)
 	local arcs = {}
 	for a = 1, ARC_COUNT do
 		local segs = {}
@@ -293,9 +264,6 @@ local function buildTool()
 
 	return tool, {
 		handle = handle,
-		blobs = blobs,
-		core = core,
-		coreWeld = coreWeld,
 		light = light,
 		display = display,
 		muzzle = muzzle,
@@ -543,24 +511,6 @@ track(RunService.RenderStepped:Connect(function(dt)
 		target = target.Unit * 0.1
 	end
 	gun.slosh = gun.slosh:Lerp(target, math.clamp(dt * 9, 0, 1))
-	local wobble = 0.03 * math.clamp(localAccel.Magnitude / 60, 0, 1)
-
-	for _, blob in ipairs(gun.blobs) do
-		local i = blob.index
-		local a = t * (2.2 + i * 0.6) + i
-		local rad = 0.05 + 0.02 * math.sin(t * 3 + i) + 0.04 * surge + wobble
-		local offset = Vector3.new(math.cos(a) * rad, math.sin(a * 1.3) * rad * 0.7, math.sin(a) * rad) + gun.slosh
-		if offset.Magnitude > 0.13 then
-			offset = offset.Unit * 0.13
-		end
-		blob.weld.C0 = ORB_CENTER * CFrame.new(offset)
-		local s = blob.baseSize * (1 + 0.25 * math.sin(t * 5 + i * 2) + 0.6 * surge)
-		blob.part.Size = Vector3.new(s, s, s)
-	end
-
-	local c = 0.14 * (1 + 0.2 * math.sin(t * 4) + 0.6 * surge)
-	gun.core.Size = Vector3.new(c, c, c)
-	gun.coreWeld.C0 = ORB_CENTER * CFrame.new(gun.slosh * 0.3)
 	gun.light.Brightness = 1 + 0.4 * math.sin(t * 4) + 3 * surge
 
 	-- lightning: redraw the arcs in new random shapes many times a second
