@@ -50,9 +50,11 @@ local DEFAULTS = {
 	aimRange = 1000,         -- how far the gun can aim
 	portalSize = 9,          -- portal diameter in studs
 	portalLifetime = 2.5,    -- seconds a portal stays open
-	travelDelay = 0.45,      -- time between portal opening and the jump
+	travelDelay = 0.45,      -- auto-jump: wait this long before jumping in
 	theme = 1,
 	showPortals = true,
+	keepOpen = true,         -- portals stay until your next shot (or CLOSE PORTALS)
+	autoJump = false,        -- jump through the new portal by yourself
 	clickTeleport = true,
 	showDimensions = true,
 	saved = {},              -- saved spots: { name, x, y, z }
@@ -308,11 +310,16 @@ local RIM_BLOBS = 22
 local FACE = CFrame.Angles(0, math.rad(90), 0)   -- cylinders lie along X; turn them to face forward
 local TAU = math.pi * 2
 
-local function makePortal(center, facing)
+local activePortals = {}
+
+-- bottom = Y of the floor under the portal; lifetime = nil uses the settings
+local function makePortal(center, facing, bottom, lifetime)
 	local th = theme()
 	local base = CFrame.lookAt(center, center + facing)
 	local size = cfg.portalSize
-	local lifetime = cfg.portalLifetime
+	if not lifetime then
+		lifetime = cfg.keepOpen and math.huge or cfg.portalLifetime
+	end
 
 	local model = Instance.new("Model")
 	model.Name = "Portal"
@@ -388,18 +395,38 @@ local function makePortal(center, facing)
 	model.Parent = Workspace
 
 	local born = os.clock()
+	local portal = {
+		model = model,
+		base = base,
+		center = center,
+		half = size / 2,
+		bottom = bottom or (center.Y - size / 2),
+		born = born,
+		closeAt = born + lifetime,   -- fully closed at this time
+		alive = true,
+		partner = nil,
+		prevZ = nil,
+	}
+	table.insert(activePortals, portal)
+
 	local conn
 	conn = RunService.RenderStepped:Connect(function()
-		local age = os.clock() - born
-		if age >= lifetime or not model.Parent then
+		local now = os.clock()
+		local age = now - born
+		if now >= portal.closeAt or not model.Parent then
 			conn:Disconnect()
+			portal.alive = false
 			model:Destroy()
+			local i = table.find(activePortals, portal)
+			if i then
+				table.remove(activePortals, i)
+			end
 			return
 		end
 		-- open with a bounce, close with a quick shrink
 		local open = math.clamp(age / 0.35, 0, 1)
 		open = 1 + 2.2 * (open - 1) ^ 3 + 1.2 * (open - 1) ^ 2
-		local close = math.clamp((lifetime - age) / 0.3, 0, 1)
+		local close = math.clamp((portal.closeAt - now) / 0.3, 0, 1)
 		local k = math.max(open * close, 0.01)
 		local r = size / 2 * k
 		local spin = age * 3
@@ -433,6 +460,16 @@ local function makePortal(center, facing)
 		light.Brightness = 3 + math.sin(age * 12)
 		sparks.Enabled = close > 0.5
 	end)
+
+	return portal
+end
+
+local function closeAllPortals()
+	local soon = os.clock() + 0.3
+	for _, p in ipairs(activePortals) do
+		p.closeAt = math.min(p.closeAt, soon)
+		p.partner = nil
+	end
 end
 
 --==============================================================
@@ -524,6 +561,62 @@ track(RunService.RenderStepped:Connect(function(dt)
 end))
 
 --==============================================================
+--  walking through portals (both ways)
+--==============================================================
+local EXIT_OFFSET = 3.5      -- how far in front of the other portal you come out
+local travelLockUntil = 0
+
+-- side = +1 if you came from the portal's back (+Z) side, -1 from its front
+local function travel(from, side)
+	local to = from.partner
+	if not (to and to.alive) then return end
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local dir = to.base.LookVector * side
+	dir = Vector3.new(dir.X, 0, dir.Z)
+	dir = dir.Magnitude > 0.01 and dir.Unit or Vector3.new(0, 0, -1)
+	local pos = Vector3.new(to.center.X, to.bottom + 3, to.center.Z) + dir * EXIT_OFFSET
+
+	local speed = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude
+	char:PivotTo(CFrame.lookAt(pos, pos + dir))
+	root.AssemblyLinearVelocity = dir * speed
+
+	travelLockUntil = os.clock() + 0.5
+	for _, p in ipairs(activePortals) do
+		p.prevZ = nil
+	end
+end
+
+-- every frame: did you just step through a portal's disc?
+track(RunService.Heartbeat:Connect(function()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local now = os.clock()
+	local locked = now < travelLockUntil
+
+	for _, p in ipairs(activePortals) do
+		local usable = p.alive and p.partner and p.partner.alive
+			and now - p.born > 0.3 and now < p.closeAt - 0.3
+		if usable then
+			local lp = p.base:PointToObjectSpace(root.Position)
+			local z = lp.Z
+			local planar = math.sqrt(lp.X * lp.X + lp.Y * lp.Y)
+			local inside = planar < p.half + 0.75 and math.abs(z) < 3
+			if not locked and inside and p.prevZ and (z >= 0) ~= (p.prevZ >= 0) then
+				travel(p, p.prevZ >= 0 and 1 or -1)
+				return
+			end
+			p.prevZ = z
+		else
+			p.prevZ = nil
+		end
+	end
+end))
+
+--==============================================================
 --  teleport (local)
 --==============================================================
 -- snap = true: land on the ground under the target (gun shots)
@@ -575,17 +668,34 @@ local function teleport(target, snap, fromPanel)
 	if equipped and currentTool and gun then
 		playShotAnimation(currentTool)
 	end
-	local half = cfg.portalSize / 2
-	if cfg.showPortals then
-		makePortal(root.Position + flat * math.max(6, half + 2) + Vector3.new(0, half - 3, 0), flat)
-		makePortal(standAt + Vector3.new(0, half - 3, 0), flat)
-		task.wait(cfg.travelDelay)
+
+	-- portals off: just move there
+	if not cfg.showPortals then
+		closeAllPortals()
+		char:PivotTo(CFrame.lookAt(standAt, standAt + flat))
+		root.AssemblyLinearVelocity = Vector3.zero
+		busy = false
+		return
 	end
 
-	if char.Parent and humanoid.Health > 0 then
-		local p = standAt + flat * (cfg.showPortals and 3 or 0)
-		char:PivotTo(CFrame.lookAt(p, p + flat))
-		root.AssemblyLinearVelocity = Vector3.zero
+	-- one pair at a time: the old pair closes
+	closeAllPortals()
+	local half = cfg.portalSize / 2
+	local feetHere = root.Position.Y - 3
+	local hereCenter = Vector3.new(root.Position.X, feetHere + half, root.Position.Z) + flat * math.max(6, half + 2)
+	local feetThere = standAt.Y - 3
+	-- the exit sits a few studs before the target, so walking out puts you right on it
+	local thereCenter = Vector3.new(standAt.X, feetThere + half, standAt.Z) - flat * EXIT_OFFSET
+	local a = makePortal(hereCenter, flat, feetHere)
+	local b = makePortal(thereCenter, flat, feetThere)
+	a.partner, b.partner = b, a
+	setStatus("Portals open - walk in (both ways)")
+
+	if cfg.autoJump then
+		task.wait(cfg.travelDelay)
+		if a.alive and a.partner then
+			travel(a, 1)
+		end
 	end
 	busy = false
 end
@@ -1262,10 +1372,20 @@ end
 local portalPage = makePage("PORTAL")
 do
 	section(portalPage, "PORTAL")
-	slider(portalPage, "Portal lifetime", "portalLifetime", 0.5, 30, 0.5, "%.1f s")
-	slider(portalPage, "Portal size", "portalSize", 3, 30, 1, "%d studs")
-	slider(portalPage, "Travel delay", "travelDelay", 0, 2, 0.05, "%.2f s")
+	toggle(portalPage, "Keep portals open (until next shot)", "keepOpen")
+	slider(portalPage, "Portal lifetime (if not kept open)", "portalLifetime", 1, 120, 1, "%.0f s")
+	slider(portalPage, "Portal size", "portalSize", 3, 30, 1, "%.0f studs")
+	toggle(portalPage, "Jump in automatically", "autoJump")
+	slider(portalPage, "Auto-jump delay", "travelDelay", 0, 2, 0.05, "%.2f s")
 	toggle(portalPage, "Show portals (off = instant teleport)", "showPortals")
+
+	local rc = row(portalPage, 36, true)
+	local closeAll = button(rc, "CLOSE PORTALS", rgb(90, 30, 30))
+	closeAll.Size = UDim2.new(1, 0, 1, 0)
+	closeAll.Activated:Connect(function()
+		closeAllPortals()
+		setStatus("Portals closed")
+	end)
 
 	section(portalPage, "COLOR")
 	local r = row(portalPage, 40, true)
@@ -1296,7 +1416,7 @@ do
 			local look = root.CFrame.LookVector
 			local flat = Vector3.new(look.X, 0, look.Z)
 			flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
-			makePortal(root.Position + flat * math.max(8, cfg.portalSize / 2 + 4) + Vector3.new(0, cfg.portalSize / 2 - 3, 0), flat)
+			makePortal(root.Position + flat * math.max(8, cfg.portalSize / 2 + 4) + Vector3.new(0, cfg.portalSize / 2 - 3, 0), flat, nil, 4)
 		end
 	end)
 end
@@ -1306,8 +1426,8 @@ local gunPage = makePage("GUN")
 do
 	section(gunPage, "GUN")
 	slider(gunPage, "Cooldown", "cooldown", 0, 5, 0.1, "%.1f s")
-	slider(gunPage, "Max teleport distance", "maxDistance", 100, 100000, 100, "%d studs")
-	slider(gunPage, "Aim range", "aimRange", 100, 5000, 50, "%d studs")
+	slider(gunPage, "Max teleport distance", "maxDistance", 100, 100000, 100, "%.0f studs")
+	slider(gunPage, "Aim range", "aimRange", 100, 5000, 50, "%.0f studs")
 	toggle(gunPage, "Click with the gun to teleport", "clickTeleport")
 	toggle(gunPage, "Show \"Select a dimension\" panel", "showDimensions", refreshDimGui)
 
@@ -1388,4 +1508,7 @@ _G.PortalGunCleanup = function()
 	if dimGui then dimGui:Destroy() end
 	if adminGui then adminGui:Destroy() end
 	if currentTool then currentTool:Destroy() end
+	for _, p in ipairs(activePortals) do
+		p.model:Destroy()
+	end
 end
