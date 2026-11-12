@@ -111,6 +111,8 @@ local BASE_GRIP = CFrame.Angles(0, 0, math.rad(-90))
 local ORB_CENTER = CFrame.new(1.134, 0.016, -0.695)   -- the green ball on top
 local ORB_SIZE = 0.48
 local PLASMA_COUNT = 6
+local ARC_COUNT = 5          -- electric arcs inside the green orb
+local ARC_SEGMENTS = 5       -- zigzag pieces per arc
 
 local WHITE = rgb(231, 231, 236)
 local BLACK = rgb(17, 17, 17)
@@ -235,6 +237,8 @@ local function buildTool()
 	local orb = fixed("EnergyBall", Vector3.new(ORB_SIZE, ORB_SIZE, ORB_SIZE), ORB_CENTER, GREEN, Enum.Material.SmoothPlastic, Enum.PartType.Ball)
 	orb.Transparency = 0.5
 	orb.CastShadow = false
+	local orbGlow = fixed("EnergyGlow", Vector3.new(ORB_SIZE + 0.05, ORB_SIZE + 0.05, ORB_SIZE + 0.05), ORB_CENTER, GREEN, Enum.Material.ForceField, Enum.PartType.Ball)
+	orbGlow.CastShadow = false
 
 	-- twinkle inside the ball (same idea as the scanned model's particle part)
 	local twinkle = Instance.new("ParticleEmitter")
@@ -274,6 +278,18 @@ local function buildTool()
 		table.insert(blobs, { part = blob, weld = w, index = i, baseSize = size })
 	end
 
+	-- electric arcs: thin neon zigzags that jump from the core to the glass (and past it after a shot)
+	local arcs = {}
+	for a = 1, ARC_COUNT do
+		local segs = {}
+		for s = 1, ARC_SEGMENTS do
+			local p, w = moving("Arc" .. a .. "_" .. s, Vector3.new(0.018, 0.018, 0.05), GREEN_HOT, NEON, BLOCK)
+			p.Transparency = 1
+			segs[s] = { part = p, weld = w }
+		end
+		arcs[a] = segs
+	end
+
 	local sound
 	if SHOT_SOUND_ID ~= "" then
 		sound = Instance.new("Sound")
@@ -298,6 +314,8 @@ local function buildTool()
 		lastPos = nil,
 		lastVel = Vector3.zero,
 		shotAt = 0,
+		arcs = arcs,
+		nextArc = 0,
 	}
 end
 
@@ -555,6 +573,48 @@ track(RunService.RenderStepped:Connect(function(dt)
 	gun.light.Brightness = 2 + math.sin(t * 4) + 6 * surge
 	gun.rings[1].C0 = ORB_CENTER * CFrame.Angles(spin, spin * 0.7, 0)
 	gun.rings[2].C0 = ORB_CENTER * CFrame.Angles(0, -spin * 1.3, spin)
+
+	-- lightning: redraw the arcs in new random shapes many times a second
+	if t >= gun.nextArc then
+		gun.nextArc = t + 0.04 + math.random() * 0.06
+		local reach = ORB_SIZE / 2 * (0.9 + 0.8 * surge)
+		local start = gun.slosh * 0.3
+		local lit = 0
+		for _, segs in ipairs(gun.arcs) do
+			local on = math.random() < (0.5 + 0.5 * surge)
+			local finish
+			if on then
+				local dir = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
+				dir = dir.Magnitude > 0.01 and dir.Unit or Vector3.new(1, 0, 0)
+				finish = start + dir * reach * (0.8 + math.random() * 0.35)
+				lit += 1
+			end
+			local prev = start
+			local color = (math.random() < 0.5) and GREEN_HOT or GREEN
+			for s, seg in ipairs(segs) do
+				if on then
+					local point = finish
+					if s < #segs then
+						local jitter = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * 0.09
+						point = start:Lerp(finish, s / #segs) + jitter
+					end
+					local len = (point - prev).Magnitude
+					if len > 0.001 then
+						seg.part.Size = Vector3.new(0.018, 0.018, len)
+						seg.weld.C0 = ORB_CENTER * CFrame.lookAt(prev, point) * CFrame.new(0, 0, -len / 2)
+						seg.part.Color = color
+						seg.part.Transparency = 0
+					else
+						seg.part.Transparency = 1
+					end
+					prev = point
+				else
+					seg.part.Transparency = 1
+				end
+			end
+		end
+		gun.light.Brightness += lit * 0.6 * math.random()
+	end
 
 	local left = cfg.cooldown - (t - lastShot)
 	gun.display.Text = (left > 0) and string.format("%.1f", left) or "READY"
