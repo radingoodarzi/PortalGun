@@ -28,7 +28,7 @@ end
 ---------------------------------------------------------------- settings
 local TOOL_NAME = "PortalGun"
 local SAVE_FILE = "PortalGun_settings.json"
-local SHOT_SOUND_ID = ""        -- optional, e.g. "rbxassetid://123456"
+local SHOT_SOUND_ID = "rbxassetid://74562584385247" -- "rick portal gun shoot" (Creator Store)
 local ADMIN_KEY = Enum.KeyCode.RightShift
 
 local function rgb(r, g, b)
